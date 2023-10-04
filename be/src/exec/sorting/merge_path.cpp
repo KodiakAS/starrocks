@@ -39,6 +39,9 @@ void merge(const SortDescs& descs, InputSegment& left, InputSegment& right, Outp
         right.forward = 0;
         return;
     }
+
+    // dest 是本线程对应的结果放置位置，dest.total_len 记录的是所有线程的 global 数组长度
+    // 计算本线程merge的时候需要从xy轴的哪个位置沿着 merge path 开始 merge
     size_t li, ri;
     detail::_eval_diagonal_intersection(descs, left, right, dest.total_len, parallel_idx, degree_of_parallelism, &li,
                                         &ri);
@@ -48,6 +51,7 @@ void merge(const SortDescs& descs, InputSegment& left, InputSegment& right, Outp
     const size_t next_start_di = (parallel_idx + 1) * dest.total_len / degree_of_parallelism;
     const size_t length = is_last_parallelism ? (dest.total_len - start_di) : (next_start_di - start_di);
 
+    // 已知本线程 merge 结果在整体数组的起始下标、需要 merge 数据的条数、以及xy轴的起始位置，开始沿着 merge path 进行 merge
     detail::_do_merge_along_merge_path(descs, left, li, right, ri, dest, start_di, length);
 
     dest.run.reset_range();
@@ -81,6 +85,8 @@ std::vector<int32_t> detail::_build_orderby_indexes(const ChunkPtr& chunk,
 void detail::_eval_diagonal_intersection(const SortDescs& descs, const InputSegment& left, const InputSegment& right,
                                          const size_t d_size, const size_t parallel_idx,
                                          const size_t degree_of_parallelism, size_t* l_start, size_t* r_start) {
+
+    // 本线程需要 merge 的对角线交点所对应的结果下标
     const size_t diag = parallel_idx * d_size / degree_of_parallelism;
     DCHECK(diag < d_size);
 
@@ -94,6 +100,7 @@ void detail::_eval_diagonal_intersection(const SortDescs& descs, const InputSegm
     bool has_false;
 
     // binary search
+    // 以 l (y轴) 为基准进行二分查找，查找到一个交点，使得 x + y = diag
     while (low < high) {
         size_t l_offset = low + (high - low) / 2;
         DCHECK(l_offset <= diag);
