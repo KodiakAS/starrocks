@@ -1,14 +1,15 @@
 {
-    "image": "starrocks/dev-env-ubuntu:latest",
+    "image": "starrocks/dev-env-ubuntu:latest-kas",
     "extensions": [
-        "ms-vscode.cpptools",
+        // "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
         "eamodio.gitlens"
     ],
     "workspaceMount": "source=${localWorkspaceFolder},target=/root/starrocks,type=bind",
     "workspaceFolder": "/root/starrocks",
     "mounts": [
         "source=${localEnv:HOME}/.m2,target=/root/.m2,type=bind",
-        "source=${localEnv:DEV_DOCKER_HOME}/cpp/extensions,target=/root/.vscode-server/extensions,type=bind",
+        "source=${localEnv:DEV_DOCKER_HOME}/cpp-clangd/extensions,target=/root/.vscode-server/extensions,type=bind",
         "source=/etc/timezone,target=/etc/timezone,type=bind",
         "source=/etc/localtime,target=/etc/localtime,type=bind"
     ]
