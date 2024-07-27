@@ -52,6 +52,7 @@ import com.starrocks.catalog.TableProperty;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
+import com.starrocks.common.MaterializedViewExceptions;
 import com.starrocks.common.Pair;
 import com.starrocks.common.UserException;
 import com.starrocks.common.io.DeepCopy;
@@ -629,8 +630,8 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
             if (table == null) {
                 LOG.warn("table {} do not exist when refreshing materialized view:{}",
                         baseTableInfo.getTableInfoStr(), materializedView.getName());
-                materializedView.setInactiveAndReason(String.format("base-table dropped: %s",
-                        baseTableInfo.getTableName()));
+                materializedView.setInactiveAndReason(
+                        MaterializedViewExceptions.inactiveReasonForBaseTableNotExists(baseTableInfo.getTableName()));
                 throw new DmlException("Materialized view base table: %s not exist.", baseTableInfo.getTableInfoStr());
             }
 
@@ -838,7 +839,8 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
 
             // FIXME: If base table's partition has been dropped, should drop the according version partition too?
             // remove partition info of not-exist partition for snapshot table from version map
-            Set<String> partitionNames = Sets.newHashSet(PartitionUtil.getPartitionNames(baseTableInfo.getTable()));
+            Set<String> partitionNames =
+                    Sets.newHashSet(PartitionUtil.getPartitionNames(baseTableInfo.getTableChecked()));
             currentTablePartitionInfo.keySet().removeIf(partitionName -> !partitionNames.contains(partitionName));
         }
         if (!changedTablePartitionInfos.isEmpty()) {
@@ -1073,13 +1075,8 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
         return CollectionUtils.isNotEmpty(materializedView.getUpdatedPartitionNamesOfTable(table, false));
     }
 
-    /**
-     * @param table : Whether this table can be supported for incremental refresh by partition or not.
-     */
-    private boolean unSupportRefreshByPartition(Table table) {
-        return !table.isOlapTableOrMaterializedView() && !table.isHiveTable()
-                && !table.isJDBCTable() && !table.isIcebergTable() && !table.isCloudNativeTable()
-                && !table.isPaimonTable();
+    private static boolean supportPartitionRefresh(Table table) {
+        return ConnectorPartitionTraits.build(table).supportPartitionRefresh();
     }
 
     /**
@@ -1090,7 +1087,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
     private boolean isNonPartitionedMVNeedToRefresh() {
         for (TableSnapshotInfo snapshotInfo : snapshotBaseTables.values()) {
             Table snapshotTable = snapshotInfo.getBaseTable();
-            if (unSupportRefreshByPartition(snapshotTable)) {
+            if (!supportPartitionRefresh(snapshotTable)) {
                 return true;
             }
             if (needToRefreshTable(snapshotTable)) {
@@ -1111,7 +1108,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
             if (snapshotTable.getId() == partitionTable.getId()) {
                 continue;
             }
-            if (unSupportRefreshByPartition(snapshotTable)) {
+            if (!supportPartitionRefresh(snapshotTable)) {
                 continue;
             }
             if (tableColumnMap.containsKey(snapshotTable)) {
@@ -1301,7 +1298,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
     private Set<String> getMVPartitionNamesToRefreshByRangePartitionNamesAndForce(Table refBaseTable,
                                                                                   Set<String> mvRangePartitionNames,
                                                                                   boolean force) {
-        if (force || unSupportRefreshByPartition(refBaseTable)) {
+        if (force || !supportPartitionRefresh(refBaseTable)) {
             return Sets.newHashSet(mvRangePartitionNames);
         }
 

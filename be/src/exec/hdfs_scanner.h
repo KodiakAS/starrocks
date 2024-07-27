@@ -71,11 +71,17 @@ struct HdfsScanStats {
     bool has_page_statistics = false;
     // page skip
     int64_t page_skip = 0;
+    // page index
+    int64_t rows_before_page_index = 0;
+    int64_t page_index_ns = 0;
 
     // late materialize round-by-round
     int64_t group_min_round_cost = 0;
 
     std::vector<int64_t> orc_stripe_sizes;
+    // io coalesce
+    int64_t orc_stripe_active_lazy_coalesce_together = 0;
+    int64_t orc_stripe_active_lazy_coalesce_seperately = 0;
 
     // Iceberg v2 only!
     int64_t iceberg_delete_file_build_ns = 0;

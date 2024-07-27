@@ -44,6 +44,7 @@ import com.starrocks.catalog.PaimonPartitionKey;
 import com.starrocks.catalog.PaimonTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionKey;
+import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
@@ -110,6 +111,11 @@ public abstract class ConnectorPartitionTraits {
 
     abstract String getDbName();
 
+    /**
+     * Whether this table support partition-granular refresh as ref-table
+     */
+    public abstract boolean supportPartitionRefresh();
+
     abstract PartitionKey createPartitionKeyWithType(List<String> values, List<Type> types) throws AnalysisException;
 
     abstract PartitionKey createPartitionKey(List<String> partitionValues, List<Column> partitionColumns)
@@ -155,6 +161,11 @@ public abstract class ConnectorPartitionTraits {
     // ========================================= Implementations ==============================================
 
     abstract static class DefaultTraits extends ConnectorPartitionTraits {
+
+        @Override
+        public boolean supportPartitionRefresh() {
+            return false;
+        }
 
         @Override
         public PartitionKey createPartitionKeyWithType(List<String> values, List<Type> types) throws AnalysisException {
@@ -296,6 +307,12 @@ public abstract class ConnectorPartitionTraits {
         }
 
         @Override
+        public boolean supportPartitionRefresh() {
+            // TODO: check partition types
+            return true;
+        }
+
+        @Override
         public Map<String, Range<PartitionKey>> getPartitionKeyRange(Column partitionColumn, Expr partitionExpr) {
             // TODO: check partition type
             return ((OlapTable) table).getRangePartitionMap();
@@ -310,7 +327,7 @@ public abstract class ConnectorPartitionTraits {
         @Override
         public Optional<Long> maxPartitionRefreshTs() {
             OlapTable olapTable = (OlapTable) table;
-            return olapTable.getPartitions().stream().map(Partition::getVisibleVersionTime).max(Long::compareTo);
+            return olapTable.getPhysicalPartitions().stream().map(PhysicalPartition::getVisibleVersionTime).max(Long::compareTo);
         }
 
         @Override
@@ -371,6 +388,11 @@ public abstract class ConnectorPartitionTraits {
     static class HivePartitionTraits extends DefaultTraits {
 
         @Override
+        public boolean supportPartitionRefresh() {
+            return true;
+        }
+
+        @Override
         public String getDbName() {
             return ((HiveMetaStoreTable) table).getDbName();
         }
@@ -419,6 +441,12 @@ public abstract class ConnectorPartitionTraits {
     }
 
     static class IcebergPartitionTraits extends DefaultTraits {
+
+        @Override
+        public boolean supportPartitionRefresh() {
+            // TODO: refine the check
+            return true;
+        }
 
         @Override
         public String getDbName() {
@@ -502,6 +530,12 @@ public abstract class ConnectorPartitionTraits {
     static class PaimonPartitionTraits extends DefaultTraits {
 
         @Override
+        public boolean supportPartitionRefresh() {
+            // TODO: refine the check
+            return true;
+        }
+
+        @Override
         public String getDbName() {
             return ((PaimonTable) table).getDbName();
         }
@@ -579,6 +613,13 @@ public abstract class ConnectorPartitionTraits {
     }
 
     static class JDBCPartitionTraits extends DefaultTraits {
+
+        @Override
+        public boolean supportPartitionRefresh() {
+            // TODO: refine check
+            return true;
+        }
+
         @Override
         public String getDbName() {
             return ((JDBCTable) table).getDbName();

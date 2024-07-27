@@ -502,6 +502,14 @@ public class ExpressionTest extends PlanTestBase {
     }
 
     @Test
+    public void testInStringCast() throws Exception {
+        // v1 is bigint, bigint in varchar will cast bigint as varchar
+        String sql = "select *  from t0 where v1 in ('a','b')";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan.contains("CAST(1: v1 AS VARCHAR(1048576)) IN ('a', 'b')\n"));
+    }
+
+    @Test
     public void testConstantNullable() throws Exception {
         String sql = "SELECT MICROSECONDS_SUB(\"1969-12-25\", NULL) FROM t1";
         ExecPlan plan = UtFrameUtils.getPlanAndFragment(connectContext, sql).second;
@@ -1698,5 +1706,17 @@ public class ExpressionTest extends PlanTestBase {
         sql = "select date_trunc('day', cast(v2 as datetime)) from t0";
         plan = getFragmentPlan(sql);
         assertContains(plan, "<slot 4> : date_trunc('day', CAST(2: v2 AS DATETIME))");
+    }
+
+    @Test
+    public void testSimplifyTruePredicate() throws Exception {
+        String sql = "select id_bool = true from test_bool where id_bool = false or id_bool = true";
+        String plan = getFragmentPlan(sql);
+        assertContains(plan, "PREDICATES: (11: id_bool = FALSE) OR (11: id_bool)");
+
+        sql = "select * from test_object where true = bitmap_contains(b1, v1) or bitmap_contains(b1, v2) = true";
+        plan = getFragmentPlan(sql);
+        assertContains(plan, "PREDICATES: (bitmap_contains(5: b1, CAST(1: v1 AS BIGINT))) " +
+                "OR (bitmap_contains(5: b1, CAST(2: v2 AS BIGINT)))");
     }
 }

@@ -55,6 +55,8 @@ import com.starrocks.analysis.SlotId;
 import com.starrocks.analysis.SlotRef;
 import com.starrocks.backup.Status;
 import com.starrocks.backup.Status.ErrCode;
+import com.starrocks.backup.mv.MvBackupInfo;
+import com.starrocks.backup.mv.MvRestoreContext;
 import com.starrocks.binlog.BinlogConfig;
 import com.starrocks.catalog.DistributionInfo.DistributionInfoType;
 import com.starrocks.catalog.LocalTablet.TabletStatus;
@@ -68,6 +70,7 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.InvalidOlapTableStateException;
+import com.starrocks.common.MaterializedViewExceptions;
 import com.starrocks.common.Pair;
 import com.starrocks.common.io.DeepCopy;
 import com.starrocks.common.io.Text;
@@ -83,6 +86,7 @@ import com.starrocks.lake.StorageInfo;
 import com.starrocks.persist.ColocatePersistInfo;
 import com.starrocks.qe.OriginStatement;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.LocalMetastore;
 import com.starrocks.server.RunMode;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.SemanticException;
@@ -501,7 +505,7 @@ public class OlapTable extends Table {
         if (partitionInfo instanceof ExpressionRangePartitionInfo) {
             ExpressionRangePartitionInfo expressionRangePartitionInfo = (ExpressionRangePartitionInfo) partitionInfo;
             Preconditions.checkState(expressionRangePartitionInfo.getPartitionExprs().size() == 1);
-            expressionRangePartitionInfo.renameTableName(newName);
+            expressionRangePartitionInfo.renameTableName("", newName);
         }
     }
 
@@ -675,7 +679,8 @@ public class OlapTable extends Table {
         }
     }
 
-    public Status resetIdsForRestore(GlobalStateMgr globalStateMgr, Database db, int restoreReplicationNum) {
+    public Status resetIdsForRestore(GlobalStateMgr globalStateMgr, Database db, int restoreReplicationNum,
+                                     MvRestoreContext mvRestoreContext) {
         // copy an origin index id to name map
         Map<Long, String> origIdxIdToName = Maps.newHashMap();
         for (Map.Entry<String, Long> entry : indexNameToId.entrySet()) {
@@ -823,6 +828,42 @@ public class OlapTable extends Table {
         return Status.OK;
     }
 
+    public Status doAfterRestore(Database db, MvRestoreContext mvRestoreContext) throws DdlException {
+        if (relatedMaterializedViews == null || relatedMaterializedViews.isEmpty()) {
+            return Status.OK;
+        }
+
+        Map<MvId, MvBackupInfo> mvIdTableNameMap = mvRestoreContext.getMvIdToTableNameMap();
+        for (MvId mvId : relatedMaterializedViews) {
+            // Find the associated mv if possible
+            MvBackupInfo mvBackupInfo = mvIdTableNameMap.get(mvId);
+            if (mvBackupInfo == null) {
+                continue;
+            }
+            MvId localMvId = mvBackupInfo.getLocalMvId();
+            if (localMvId == null) {
+                continue;
+            }
+            Database mvDb = GlobalStateMgr.getCurrentState().getDb(localMvId.getDbId());
+            if (mvDb == null) {
+                continue;
+            }
+            Table mvTable = mvDb.getTable(localMvId.getId());
+            if (mvTable == null) {
+                continue;
+            }
+            if (!mvTable.isMaterializedView()) {
+                LOG.warn("Base table {} related materialized view {} is not a mv, local mvId:{}, remote mvId:{}",
+                        this.name, mvTable.getName(), localMvId, mvId);
+                continue;
+            }
+            MaterializedView mv = (MaterializedView) mvTable;
+            // Do this no matter whether mv is active or not to restore version map for mv rewrite.
+            mv.doAfterRestore(db, mvRestoreContext);
+        }
+        return Status.OK;
+    }
+
     public Map<Long, MaterializedIndexMeta> getIndexIdToMeta() {
         return indexIdToMeta;
     }
@@ -868,6 +909,10 @@ public class OlapTable extends Table {
      */
     public List<Column> getKeyColumns() {
         return getColumns().stream().filter(Column::isKey).collect(Collectors.toList());
+    }
+
+    public List<Column> getKeyColumnsInOrder() {
+        return getFullSchema().stream().filter(Column::isKey).collect(Collectors.toList());
     }
 
     public List<Column> getKeyColumnsByIndexId(Long indexId) {
@@ -2825,15 +2870,8 @@ public class OlapTable extends Table {
         // in recycle bin,
         // which make things easier.
         dropAllTempPartitions();
-        for (MvId mvId : getRelatedMaterializedViews()) {
-            Table tmpTable = db.getTable(mvId.getId());
-            if (tmpTable != null) {
-                MaterializedView mv = (MaterializedView) tmpTable;
-                mv.setInactiveAndReason("base-table dropped: " + getName());
-            } else {
-                LOG.warn("Ignore materialized view {} does not exists", mvId);
-            }
-        }
+        LocalMetastore.inactiveRelatedMaterializedView(db, this,
+                MaterializedViewExceptions.inactiveReasonForBaseTableNotExists(getName()));
     }
 
     public void onErase(boolean isReplay) {
@@ -2902,6 +2940,8 @@ public class OlapTable extends Table {
                                     batchTaskMap.put(backendId, batchTask);
                                 }
                                 batchTask.addTask(dropTask);
+                                LOG.info("delete tablet[{}] from backend[{}] because table {}-{} is dropped",
+                                        tabletId, backendId, table.getId(), table.getName());
                             } // end for replicas
                         } // end for tablets
                     }

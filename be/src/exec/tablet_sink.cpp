@@ -320,6 +320,9 @@ Status OlapTableSink::_init_node_channels(RuntimeState* state, IndexIdToTabletBE
                             node_channel = it->second.get();
                         }
                         node_channel->add_tablet(index->index_id, tablet_info);
+                        if (_enable_replicated_storage && i == 0) {
+                            node_channel->set_has_primary_replica(true);
+                        }
                     }
                 }
 
@@ -374,8 +377,8 @@ Status OlapTableSink::_automatic_create_partition() {
     request.__set_table_id(_vectorized_partition->table_id());
     request.__set_partition_values(_partition_not_exist_row_values);
 
-    VLOG(1) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
-            << "automatic partition rpc begin request " << request;
+    LOG(INFO) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
+              << "automatic partition rpc begin request " << request;
     TNetworkAddress master_addr = get_master_address();
     auto timeout_ms = _runtime_state->query_options().query_timeout * 1000 / 2;
     int retry_times = 0;
@@ -394,8 +397,8 @@ Status OlapTableSink::_automatic_create_partition() {
     } while (result.status.status_code == TStatusCode::SERVICE_UNAVAILABLE &&
              butil::gettimeofday_s() - start_ts < timeout_ms / 1000);
 
-    VLOG(1) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
-            << "automatic partition rpc end response " << result;
+    LOG(INFO) << "load_id=" << print_id(_load_id) << ", txn_id: " << std::to_string(_txn_id)
+              << "automatic partition rpc end response " << result;
     if (result.status.status_code == TStatusCode::OK) {
         // add new created partitions
         RETURN_IF_ERROR(_vectorized_partition->add_partitions(result.partitions));
