@@ -24,7 +24,6 @@
 #include "gen_cpp/InternalService_types.h"
 #include "gen_cpp/Types_types.h"
 #include "gen_cpp/internal_service.pb.h"
-#include "io/io_profiler.h"
 #include "runtime/current_thread.h"
 #include "service/brpc.h"
 #include "storage/delta_writer.h"
@@ -56,7 +55,7 @@ public:
                             " txn_id: {}, tablet id: {}, flush token status: {}",
                             _request->txn_id(), _request->tablet_id(), _flush_token->status().to_string()));
         _send_fail_response(status);
-        VLOG(1) << "Segment flush task is destructed with failure response"
+        VLOG(2) << "Segment flush task is destructed with failure response"
                 << ", txn_id: " << _request->txn_id() << ", tablet id: " << _request->tablet_id()
                 << ", flush token status: " << _flush_token->status();
     }
@@ -78,7 +77,6 @@ public:
 
         auto st = Status::OK();
         if (_request->has_segment() && _cntl->request_attachment().size() > 0) {
-            auto scope = IOProfiler::scope(IOProfiler::TAG_LOAD, _writer->tablet()->tablet_id());
             auto& segment_pb = _request->segment();
             st = _writer->write_segment(segment_pb, _cntl->request_attachment());
         } else if (!_request->eos()) {
@@ -108,7 +106,7 @@ public:
     void release() {
         bool expect = false;
         _run_or_released.compare_exchange_strong(expect, true);
-        VLOG(1) << "Segment flush task is released"
+        VLOG(2) << "Segment flush task is released"
                 << ", txn_id: " << _request->txn_id() << ", tablet id: " << _request->tablet_id()
                 << ", flush token status: " << _flush_token->status();
     }
@@ -172,7 +170,7 @@ Status SegmentFlushToken::submit(DeltaWriter* writer, brpc::Controller* cntl,
     }
 
     auto task = std::make_shared<SegmentFlushTask>(this, writer, cntl, request, response, done);
-    auto submit_st = _flush_token->submit(std::move(task));
+    auto submit_st = _flush_token->submit(task);
     if (submit_st.ok()) {
         closure_guard.release();
     } else {

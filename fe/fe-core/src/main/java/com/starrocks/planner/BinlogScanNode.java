@@ -128,7 +128,7 @@ public class BinlogScanNode extends ScanNode {
     // TODO: support partition prune and bucket prune
     public void computeScanRanges() throws UserException {
         scanRanges = new ArrayList<>();
-        TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentInvertedIndex();
+        TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentState().getTabletInvertedIndex();
         long localBeId = -1;
         long dbId = -1;
         String dbName = null;
@@ -141,7 +141,7 @@ public class BinlogScanNode extends ScanNode {
                 if (dbId == -1) {
                     TabletMeta meta = invertedIndex.getTabletMeta(tablet.getId());
                     dbId = meta.getDbId();
-                    dbName = GlobalStateMgr.getCurrentState().getDb(dbId).getFullName();
+                    dbName = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId).getFullName();
                 }
 
                 long tabletId = tablet.getId();
@@ -171,7 +171,7 @@ public class BinlogScanNode extends ScanNode {
                 }
                 for (Replica replica : allQueryableReplicas) {
                     Backend backend = Preconditions.checkNotNull(
-                            GlobalStateMgr.getCurrentSystemInfo().getBackend(replica.getBackendId()),
+                            GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackend(replica.getBackendId()),
                             "backend not found: " + replica.getBackendId());
                     scanBackendIds.add(backend.getId());
                     TScanRangeLocation replicaLocation = new TScanRangeLocation(backend.getAddress());
@@ -190,10 +190,6 @@ public class BinlogScanNode extends ScanNode {
         return scanRanges;
     }
 
-    @Override
-    public int getNumInstances() {
-        return scanRanges.size();
-    }
 
     @Override
     public boolean canDoReplicatedJoin() {

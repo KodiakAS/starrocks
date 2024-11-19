@@ -62,6 +62,7 @@ DECLARE_int32(fslib_s3client_max_instance_per_item);
 DECLARE_int32(fslib_s3client_nonread_max_retries);
 DECLARE_int32(fslib_s3client_nonread_retry_scale_factor);
 DECLARE_int32(fslib_s3client_connect_timeout_ms);
+DECLARE_bool(fslib_s3client_use_list_objects_v1);
 // threadpool size for buffer prefetch task
 DECLARE_int32(fs_buffer_prefetch_threadpool_size);
 // switch to turn on/off buffer prefetch when read
@@ -342,10 +343,15 @@ Status to_status(const absl::Status& absl_status) {
     }
 }
 
-void init_staros_worker() {
+void init_staros_worker(const std::shared_ptr<starcache::StarCache>& star_cache) {
     if (g_starlet.get() != nullptr) {
         return;
     }
+
+    if (star_cache) {
+        (void)fslib::set_star_cache(star_cache);
+    }
+
     // skip staros reinit aws sdk
     staros::starlet::fslib::skip_aws_init_api = true;
 
@@ -374,9 +380,13 @@ void init_staros_worker() {
     FLAGS_fslib_s3client_nonread_max_retries = config::starlet_fslib_s3client_nonread_max_retries;
     FLAGS_fslib_s3client_nonread_retry_scale_factor = config::starlet_fslib_s3client_nonread_retry_scale_factor;
     FLAGS_fslib_s3client_connect_timeout_ms = config::starlet_fslib_s3client_connect_timeout_ms;
+    FLAGS_fslib_s3client_use_list_objects_v1 = config::s3_use_list_objects_v1;
+    fslib::FLAGS_delete_files_max_key_in_batch = config::starlet_delete_files_max_key_in_batch;
 
     fslib::FLAGS_use_star_cache = config::starlet_use_star_cache;
+    fslib::FLAGS_star_cache_async_init = config::starlet_star_cache_async_init;
     fslib::FLAGS_star_cache_mem_size_percent = config::starlet_star_cache_mem_size_percent;
+    fslib::FLAGS_star_cache_mem_size_bytes = config::starlet_star_cache_mem_size_bytes;
     fslib::FLAGS_star_cache_disk_size_percent = config::starlet_star_cache_disk_size_percent;
     fslib::FLAGS_star_cache_disk_size_bytes = config::starlet_star_cache_disk_size_bytes;
     fslib::FLAGS_star_cache_block_size_bytes = config::starlet_star_cache_block_size_bytes;
@@ -403,6 +413,16 @@ void update_staros_starcache() {
     if (fslib::FLAGS_use_star_cache != config::starlet_use_star_cache) {
         fslib::FLAGS_use_star_cache = config::starlet_use_star_cache;
         (void)fslib::star_cache_init(fslib::FLAGS_use_star_cache);
+    }
+
+    if (fslib::FLAGS_star_cache_mem_size_percent != config::starlet_star_cache_mem_size_percent) {
+        fslib::FLAGS_star_cache_mem_size_percent = config::starlet_star_cache_mem_size_percent;
+        (void)fslib::star_cache_update_memory_quota_percent(fslib::FLAGS_star_cache_mem_size_percent);
+    }
+
+    if (fslib::FLAGS_star_cache_mem_size_bytes != config::starlet_star_cache_mem_size_bytes) {
+        fslib::FLAGS_star_cache_mem_size_bytes = config::starlet_star_cache_mem_size_bytes;
+        (void)fslib::star_cache_update_memory_quota_bytes(fslib::FLAGS_star_cache_mem_size_bytes);
     }
 }
 

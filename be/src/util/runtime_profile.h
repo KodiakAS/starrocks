@@ -73,6 +73,10 @@ inline unsigned long long operator"" _ms(unsigned long long x) {
     (profile)->add_counter(name, type, RuntimeProfile::Counter::create_strategy(type, merge_type))
 #define ADD_TIMER(profile, name) \
     (profile)->add_counter(name, TUnit::TIME_NS, RuntimeProfile::Counter::create_strategy(TUnit::TIME_NS))
+#define ADD_TIMER_WITH_THRESHOLD(profile, name, threshold) \
+    (profile)->add_counter(                                \
+            name, TUnit::TIME_NS,                          \
+            RuntimeProfile::Counter::create_strategy(TUnit::TIME_NS, TCounterMergeType::MERGE_ALL, threshold))
 #define ADD_PEAK_COUNTER(profile, name, type) \
     (profile)->AddHighWaterMarkCounter(name, type, RuntimeProfile::Counter::create_strategy(TCounterAggregateType::AVG))
 #define ADD_CHILD_COUNTER(profile, name, type, parent) \
@@ -180,8 +184,14 @@ public:
 
         const TCounterStrategy& strategy() const { return _strategy; }
 
-        bool is_sum() const { return _strategy.aggregate_type == TCounterAggregateType::SUM; }
-        bool is_avg() const { return _strategy.aggregate_type == TCounterAggregateType::AVG; }
+        bool is_sum() const {
+            return _strategy.aggregate_type == TCounterAggregateType::SUM ||
+                   _strategy.aggregate_type == TCounterAggregateType::SUM_AVG;
+        }
+        bool is_avg() const {
+            return _strategy.aggregate_type == TCounterAggregateType::AVG ||
+                   _strategy.aggregate_type == TCounterAggregateType::AVG_SUM;
+        }
 
         bool skip_merge() const {
             return _strategy.merge_type == TCounterMergeType::SKIP_ALL ||
@@ -191,6 +201,10 @@ public:
         bool skip_min_max() const { return _strategy.min_max_type == TCounterMinMaxType::SKIP_ALL; }
 
         int64_t display_threshold() const { return _strategy.display_threshold; }
+        bool should_display() const {
+            int64_t threshold = _strategy.display_threshold;
+            return threshold == 0 || value() > threshold;
+        }
 
     private:
         friend class RuntimeProfile;
@@ -535,6 +549,16 @@ public:
     // This function updates _local_time_percent for each profile.
     void compute_time_in_profile();
 
+    void inc_version() {
+        std::lock_guard<std::mutex> l(_version_lock);
+        _version += 1;
+    }
+
+    int64_t get_version() const {
+        std::lock_guard<std::mutex> l(_version_lock);
+        return _version;
+    }
+
 public:
     // The root counter name for all top level counters.
     const static std::string ROOT_COUNTER;
@@ -607,9 +631,18 @@ private:
     // of the total time in the entire profile tree.
     double _local_time_percent;
 
-    // update a subtree of profiles from nodes, rooted at *idx.
+    // Protects _version
+    mutable std::mutex _version_lock;
+    // The version of this profile. It is used to prevent updating this profile
+    // from an old one.
+    int64_t _version{0};
+
+    // update a subtree of profiles from nodes, rooted at *idx. If the version
+    // of the parent node, or the version of root node for this subtree is older,
+    // skip to update the subtree, but still traverse the nodes of subtree to
+    // get the node immediately following this subtree.
     // On return, *idx points to the node immediately following this subtree.
-    void update(const std::vector<TRuntimeProfileNode>& nodes, int* idx);
+    void update(const std::vector<TRuntimeProfileNode>& nodes, int* idx, bool is_parent_node_old);
 
     // Helper function to compute compute the fraction of the total time spent in
     // this profile and its children.

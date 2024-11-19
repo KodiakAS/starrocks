@@ -1,8 +1,12 @@
 ---
-displayed_sidebar: "Chinese"
+displayed_sidebar: docs
 ---
 
 # 手动部署 StarRocks
+
+:::tip
+手动部署前的准备工作在 [部署前提条件](./deployment_prerequisites.md) 以及 [检查环境配置](./environment_configurations.md) 文档中有详细说明。如果您计划部署生产集群，请参照以上两篇文档。如果您刚开始使用 StarRocks，希望按照快速入门教程进行操作，请参考 [快速入门](../quick_start/quick_start.mdx)。
+:::
 
 本文介绍如何手动部署 StarRocks 存算一体集群（BE 同时做数据存储和计算）。其他安装方式请参考[部署概览](../deployment/deployment_overview.md)。
 
@@ -49,7 +53,8 @@ displayed_sidebar: "Chinese"
 
       > **说明**
       >
-      > 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 从 v3.3.0 开始，StarRocks 支持基于 IPv6 的部署。
 
    d. 如果您的实例安装了多个 JDK，并且您要使用 JDK 与环境变量 `JAVA_HOME` 中指定的不同，则必须在配置文件中添加配置项 `JAVA_HOME` 来指定所选该 JDK 的安装路径。
 
@@ -58,7 +63,7 @@ displayed_sidebar: "Chinese"
       JAVA_HOME = <path_to_JDK>
       ```
 
-   e.  更多高级配置项请参考 [参数配置 - FE 配置项](../administration/FE_configuration.md#fe-配置项)。
+   e.  更多高级配置项请参考 [参数配置 - FE 配置项](../administration/management/FE_configuration.md)。
 
 3. 启动 FE 节点。
 
@@ -127,7 +132,8 @@ displayed_sidebar: "Chinese"
 
       > **说明**
       >
-      > 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 从 v3.3.0 开始，StarRocks 支持基于 IPv6 的部署。
 
    d. 如果您的实例安装了多个 JDK，并且您要使用 JDK 与环境变量 `JAVA_HOME` 中指定的不同，则必须在配置文件中添加配置项 `JAVA_HOME` 来指定所选该 JDK 的安装路径。
 
@@ -136,7 +142,7 @@ displayed_sidebar: "Chinese"
       JAVA_HOME = <path_to_JDK>
       ```
 
-   e.  更多高级配置项请参考 [参数配置 - BE 配置项](../administration/BE_configuration.md#be-配置项)。
+   e.  更多高级配置项请参考 [参数配置 - BE 配置项](../administration/management/BE_configuration.md)。
 
 3. 启动 BE 节点。
 
@@ -164,6 +170,11 @@ displayed_sidebar: "Chinese"
 > **说明**
 >
 > 在一个 StarRocks 集群中部署并添加至少 3 个 BE 节点后，这些节点将自动形成一个 BE 高可用集群。
+> 如果您只想部署一个 BE 节点，您必须在 FE 配置文件 **fe/conf/fe.conf** 中设置 `default_replication_num` 为 `1`。
+
+      ```YAML
+      default_replication_num = 1
+      ```
 
 ## 第三步：（可选）启动 CN 服务
 
@@ -188,7 +199,8 @@ Compute Node（CN）是一种无状态的计算服务，本身不存储数据。
 
       > **说明**
       >
-      > 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 您可以在终端中运行 `ifconfig` 以查看当前实例拥有的 IP 地址。
+      > - 从 v3.3.0 开始，StarRocks 支持基于 IPv6 的部署。
 
    c. 如果您的实例安装了多个 JDK，并且您要使用 JDK 与环境变量 `JAVA_HOME` 中指定的不同，则必须在配置文件中添加配置项 `JAVA_HOME` 来指定所选该 JDK 的安装路径。
 
@@ -197,7 +209,7 @@ Compute Node（CN）是一种无状态的计算服务，本身不存储数据。
       JAVA_HOME = <path_to_JDK>
       ```
 
-   d.  由于大部分 CN 参数都继承自 BE 节点，您可以参考 [参数配置 - BE 配置项](../administration/BE_configuration.md#be-配置项) 了解更多 CN 高级配置项。
+   d.  由于大部分 CN 参数都继承自 BE 节点，您可以参考 [参数配置 - BE 配置项](../administration/management/BE_configuration.md) 了解更多 CN 高级配置项。
 
 2. 启动 CN 节点。
 
@@ -365,7 +377,7 @@ Compute Node（CN）是一种无状态的计算服务，本身不存储数据。
    如果字段 `Alive` 为 `true`，说明该 CN 节点正常启动并加入集群。
 
    如果执行查询时需要使用 CN 节点扩展算力，则需要设置系统变量 `SET
-prefer_compute_node = true;` 和 `SET use_compute_nodes = -1;`。系统变量的更多信息，请参见[系统变量](../reference/System_variable.md#支持的变量)。
+prefer_compute_node = true;` 和 `SET use_compute_nodes = -1;`。系统变量的更多信息，请参见[系统变量](../sql-reference/System_variable.md#支持的变量)。
 
 ## 第五步：（可选）部署高可用 FE 集群
 
@@ -390,7 +402,7 @@ prefer_compute_node = true;` 和 `SET use_compute_nodes = -1;`。系统变量的
    > **说明**
    >
    > - 您只能通过一条 SQL 添加一个 Follower FE 节点。
-   > - 如需添加更多的 Observer FE 节点，请执行 `ALTER SYSTEM ADD OBSERVER "<fe_address>:<edit_log_port>"`。有关详细说明，请参考 [ALTER SYSTEM - FE](../sql-reference/sql-statements/Administration/ALTER_SYSTEM.md)。
+   > - 如需添加更多的 Observer FE 节点，请执行 `ALTER SYSTEM ADD OBSERVER "<fe_address>:<edit_log_port>"`。有关详细说明，请参考 [ALTER SYSTEM - FE](../sql-reference/sql-statements/cluster-management/nodes_processes/ALTER_SYSTEM.md)。
 
 3. 在新的 FE 示例上启动终端，创建元数据存储路径，进入 StarRocks 部署目录，并修改 FE 配置文件 **fe/conf/fe.conf**。详细信息，请参考 [第一步：启动 Leader FE 节点](#第一步启动-leader-fe-节点)。
 

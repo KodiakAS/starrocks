@@ -17,10 +17,15 @@ package com.starrocks.sql.optimizer;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import com.starrocks.analysis.Expr;
+import com.starrocks.analysis.FunctionCallExpr;
+import com.starrocks.analysis.StringLiteral;
+import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.MaterializedView;
+import com.starrocks.catalog.MvUpdateInfo;
+import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Pair;
-import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAggregationOperator;
@@ -28,11 +33,12 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalScanOperator;
 import com.starrocks.sql.optimizer.operator.pattern.Pattern;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
-import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MaterializedViewRewriter;
+import com.starrocks.sql.optimizer.rule.transformation.materialization.MvPartitionCompensator;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import com.starrocks.sql.optimizer.rule.transformation.materialization.TableScanDesc;
+import com.starrocks.sql.optimizer.rule.transformation.materialization.compensation.MVCompensation;
 import org.apache.commons.collections4.SetUtils;
 
 import java.util.Collections;
@@ -44,6 +50,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.starrocks.sql.common.TimeUnitUtils.DATE_TRUNC_SUPPORTED_TIME_MAP;
 import static com.starrocks.sql.optimizer.OptimizerTraceUtil.logMVRewrite;
 
 public class MaterializationContext {
@@ -61,15 +68,10 @@ public class MaterializationContext {
 
     private Map<ColumnRefOperator, ColumnRefOperator> outputMapping;
 
-    // Updated partition names of the materialized view
-    private final Set<String> mvPartitionNamesToRefresh;
-
     // Updated partition names of the ref base table which will be used in compensating partition predicates
-    private final Set<String> refTableUpdatePartitionNames;
+    private final MvUpdateInfo mvUpdateInfo;
 
     private final List<Table> baseTables;
-
-    private final Set<ColumnRefOperator> originQueryColumns;
 
     // tables both in query and mv
     private final List<Table> intersectingTables;
@@ -79,6 +81,9 @@ public class MaterializationContext {
     private final List<Integer> matchedGroups;
 
     private final ScalarOperator mvPartialPartitionPredicate;
+
+    // The output column refs of the MV which is ordered by user's select list.
+    private final List<ColumnRefOperator> mvOutputColumnRefs;
 
     // THe used count for MV used as the rewrite result in a query.
     // NOTE: mvUsedCount is a not exact value because MV may be rewritten multi times
@@ -91,9 +96,8 @@ public class MaterializationContext {
     // during one query, so it's safe to cache it and be used for each optimizer rule.
     // But it is different for each materialized view, compensate partition predicate from the plan's
     // `selectedPartitionIds`, and check `isNeedCompensatePartitionPredicate` to get more information.
-    private Optional<Boolean> isCompensatePartitionPredicateOpt = Optional.empty();
-    // Cache a mv's pruned partition predicates in the rewrite because it's not changed through the context.
-    private Optional<ScalarOperator> mvPrunedPartitionPredicateOpt = Optional.empty();
+    private MVCompensation mvMVCompensation = null;
+
     // Cache partition compensates predicates for each ScanNode and isCompensate pair.
     private Map<Pair<LogicalScanOperator, Boolean>, List<ScalarOperator>> scanOpToPartitionCompensatePredicates;
 
@@ -102,24 +106,22 @@ public class MaterializationContext {
                                   OptExpression mvExpression,
                                   ColumnRefFactory queryColumnRefFactory,
                                   ColumnRefFactory mvColumnRefFactory,
-                                  Set<String> mvPartitionNamesToRefresh,
                                   List<Table> baseTables,
-                                  Set<ColumnRefOperator> originQueryColumns,
                                   List<Table> intersectingTables,
                                   ScalarOperator mvPartialPartitionPredicate,
-                                  Set<String> refTableUpdatePartitionNames) {
+                                  MvUpdateInfo mvUpdateInfo,
+                                  List<ColumnRefOperator> mvOutputColumnRefs) {
         this.optimizerContext = optimizerContext;
         this.mv = mv;
         this.mvExpression = mvExpression;
         this.queryRefFactory = queryColumnRefFactory;
         this.mvColumnRefFactory = mvColumnRefFactory;
-        this.mvPartitionNamesToRefresh = mvPartitionNamesToRefresh;
         this.baseTables = baseTables;
-        this.originQueryColumns = originQueryColumns;
         this.intersectingTables = intersectingTables;
         this.matchedGroups = Lists.newArrayList();
         this.mvPartialPartitionPredicate = mvPartialPartitionPredicate;
-        this.refTableUpdatePartitionNames = refTableUpdatePartitionNames;
+        this.mvUpdateInfo = mvUpdateInfo;
+        this.mvOutputColumnRefs = mvOutputColumnRefs;
         this.scanOpToPartitionCompensatePredicates = Maps.newHashMap();
     }
 
@@ -159,10 +161,6 @@ public class MaterializationContext {
         this.outputMapping = outputMapping;
     }
 
-    public Set<String> getMvPartitionNamesToRefresh() {
-        return mvPartitionNamesToRefresh;
-    }
-
     public List<Table> getBaseTables() {
         return baseTables;
     }
@@ -195,12 +193,17 @@ public class MaterializationContext {
         return mvUsedCount;
     }
 
+    // whether this mv has been used multi times
+    public boolean isMvDuplicateUsed() {
+        return mvUsedCount > 0;
+    }
+
     public void updateMVUsedCount() {
         this.mvUsedCount += 1;
     }
 
-    public Set<String> getRefTableUpdatePartitionNames() {
-        return this.refTableUpdatePartitionNames;
+    public MvUpdateInfo getMvUpdateInfo() {
+        return mvUpdateInfo;
     }
 
     private boolean checkOperatorCompatible(OperatorType query) {
@@ -209,6 +212,10 @@ public class MaterializationContext {
             return MvUtils.isLogicalSPJG(mvExpression);
         }
         return MvUtils.isLogicalSPJ(mvExpression);
+    }
+
+    public List<ColumnRefOperator> getMvOutputColumnRefs() {
+        return mvOutputColumnRefs;
     }
 
     /**
@@ -222,6 +229,12 @@ public class MaterializationContext {
         final List<Table> queryTables = MvUtils.getAllTables(queryExpression);
         final List<Table> mvTables = getBaseTables();
         final OperatorType queryOp = queryExpression.getOp().getOpType();
+
+        // if a query has been applied this mv, return false directly.
+        List<LogicalScanOperator> scanOperators = MvUtils.getScanOperator(queryExpression);
+        if (scanOperators.stream().anyMatch(op -> op.isOpAppliedMV(mv.getId()))) {
+            return false;
+        }
 
         if (!checkOperatorCompatible(queryOp)) {
             return false;
@@ -264,15 +277,15 @@ public class MaterializationContext {
                 return false;
             }
 
-            List<TableScanDesc> queryTableScanDescs = MvUtils.getTableScanDescs(queryExpression);
-            List<TableScanDesc> mvTableScanDescs = MvUtils.getTableScanDescs(mvExpression);
+            List<TableScanDesc> queryTableScanDescs = MvUtils.getTableScanDescs(queryExpression, queryRefFactory);
+            List<TableScanDesc> mvTableScanDescs = MvUtils.getTableScanDescs(mvExpression, mvColumnRefFactory);
             // there should be at least one same join type in mv scan descs for every query scan desc.
             // to forbid rewrite for:
             // query: a left outer join b
             // mv: a inner join b inner join c
             for (TableScanDesc queryScanDesc : queryTableScanDescs) {
                 if (queryScanDesc.getJoinOptExpression() != null
-                        && !mvTableScanDescs.stream().anyMatch(scanDesc -> scanDesc.isMatch(queryScanDesc))) {
+                        && mvTableScanDescs.stream().noneMatch(scanDesc -> scanDesc.isCompatible(queryScanDesc))) {
                     logMVRewrite(mvName, "MV is not applicable in view delta mode: " +
                             "at least one same join type should be existed");
                     return false;
@@ -351,6 +364,43 @@ public class MaterializationContext {
         }
 
         /**
+         * If mv is partitioned by time, prefer the one with the larger time granularity.
+         * eg: mv partitioned by date_trunc('day', ts) is preferred over mv partitioned by date_trunc('hour', ts)
+         */
+        private int orderingTimeGranularity(MaterializationContext materializationContext) {
+            if (materializationContext.getMvExpression().getOp().getOpType() == OperatorType.LOGICAL_AGGR) {
+                MaterializedView mv = materializationContext.getMv();
+                PartitionInfo partitionInfo = mv.getPartitionInfo();
+                if (!partitionInfo.isRangePartition()) {
+                    return LOWEST_ORDERING;
+                }
+                Optional<Expr> mvPartitionExprOpt = mv.getRangePartitionFirstExpr();
+                if (mvPartitionExprOpt.isEmpty()) {
+                    return LOWEST_ORDERING;
+                }
+                Expr mvPartitionExpr = mvPartitionExprOpt.get();
+                if (mvPartitionExpr == null || !(mvPartitionExpr instanceof FunctionCallExpr)) {
+                    return LOWEST_ORDERING;
+                }
+                FunctionCallExpr functionCallExpr = (FunctionCallExpr) mvPartitionExpr;
+                if (!functionCallExpr.getFnName().getFunction().equalsIgnoreCase(FunctionSet.DATE_TRUNC)) {
+                    return LOWEST_ORDERING;
+                }
+                StringLiteral timeUnit = (StringLiteral) mvPartitionExpr.getChild(0);
+                if (timeUnit == null) {
+                    return LOWEST_ORDERING;
+                }
+                Integer priority = DATE_TRUNC_SUPPORTED_TIME_MAP.get(timeUnit.getStringValue());
+                if (priority == null) {
+                    return LOWEST_ORDERING;
+                }
+                return -priority;
+            } else {
+                return LOWEST_ORDERING;
+            }
+        }
+
+        /**
          * Prefer exact-intersecting than partial-intersecting
          */
         private static int orderingIntersectTables(MaterializationContext mvContext) {
@@ -374,6 +424,7 @@ public class MaterializationContext {
                         .comparing(this::orderingAggregation)
                         .thenComparing(RewriteOrdering::orderingRowCount)
                         .thenComparing(MaterializationContext::getMVUsedCount)
+                        .thenComparing(this::orderingTimeGranularity)
                         .compare(o1, o2);
             } else if (o1Type == o2Type && o1Type == OperatorType.LOGICAL_JOIN) {
                 return Comparator.comparing(RewriteOrdering::orderingIntersectTables)
@@ -424,30 +475,17 @@ public class MaterializationContext {
      *  means MV's partitions can cover all needed partitions from Query.
      * </p>
      */
-    public boolean getOrInitCompensatePartitionPredicate(OptExpression queryExpression) {
-        if (!isCompensatePartitionPredicateOpt.isPresent()) {
-            SessionVariable sessionVariable = optimizerContext.getSessionVariable();
+    public MVCompensation getOrInitMVCompensation(OptExpression queryExpression) {
+        if (mvMVCompensation == null) {
             // only set this when `queryExpression` contains ref table, otherwise the cached value maybe dirty.
-            isCompensatePartitionPredicateOpt = sessionVariable.isEnableMaterializedViewRewritePartitionCompensate() ?
-                    MvUtils.isNeedCompensatePartitionPredicate(queryExpression, this) : Optional.of(false);
+            this.mvMVCompensation = MvPartitionCompensator.getMvCompensation(queryExpression, this);
+            logMVRewrite(mv.getName(), "Init mv compensation: {}", mvMVCompensation);
         }
-        return isCompensatePartitionPredicateOpt.orElse(true);
+        return this.mvMVCompensation;
     }
 
-    public boolean isCompensatePartitionPredicate() {
-        return isCompensatePartitionPredicateOpt.orElse(true);
-    }
-
-    public ScalarOperator getMVPrunedPartitionPredicate() {
-        if (!mvPrunedPartitionPredicateOpt.isPresent()) {
-            List<ScalarOperator> mvPrunedPartitionPredicates = MvUtils.getMVPrunedPartitionPredicates(mv, mvExpression);
-            if (mvPrunedPartitionPredicates == null || mvPrunedPartitionPredicates.isEmpty()) {
-                mvPrunedPartitionPredicateOpt = Optional.of(ConstantOperator.TRUE);
-            } else {
-                mvPrunedPartitionPredicateOpt = Optional.of(Utils.compoundAnd(mvPrunedPartitionPredicates));
-            }
-        }
-        return mvPrunedPartitionPredicateOpt.get();
+    public MVCompensation getMvCompensation() {
+        return mvMVCompensation;
     }
 
     public Map<Pair<LogicalScanOperator, Boolean>, List<ScalarOperator>> getScanOpToPartitionCompensatePredicates() {

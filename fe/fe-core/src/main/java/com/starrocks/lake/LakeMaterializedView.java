@@ -18,6 +18,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.staros.proto.FileCacheInfo;
 import com.staros.proto.FilePathInfo;
+import com.starrocks.alter.AlterJobV2Builder;
 import com.starrocks.catalog.CatalogUtils;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.DistributionInfo;
@@ -31,13 +32,11 @@ import com.starrocks.common.io.Text;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.server.StorageVolumeMgr;
 import com.starrocks.statistic.StatsConstants;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
@@ -101,16 +100,23 @@ public class LakeMaterializedView extends MaterializedView {
     }
 
     @Override
-    public void write(DataOutput out) throws IOException {
-        // write type first
-        Text.writeString(out, type.name());
-        Text.writeString(out, GsonUtils.GSON.toJson(this));
+    public boolean isDeleteRetryable() {
+        return true;
     }
 
     @Override
-    public Runnable delete(boolean replay) {
-        onErase(replay);
-        return replay ? null : new DeleteLakeTableTask(this);
+    public boolean delete(long dbId, boolean replay) {
+        return LakeTableHelper.deleteTable(dbId, this, replay);
+    }
+
+    @Override
+    public boolean deleteFromRecycleBin(long dbId, boolean replay) {
+        return LakeTableHelper.deleteTableFromRecycleBin(dbId, this, replay);
+    }
+
+    @Override
+    public AlterJobV2Builder alterTable() {
+        return LakeTableHelper.alterTable(this);
     }
 
     @Override
@@ -148,7 +154,6 @@ public class LakeMaterializedView extends MaterializedView {
         sb.append(storageProperties.get(PropertyAnalyzer.PROPERTIES_ENABLE_ASYNC_WRITE_BACK)).append("\"");
 
         // storage_volume
-        StorageVolumeMgr svm = GlobalStateMgr.getCurrentState().getStorageVolumeMgr();
         String volume = GlobalStateMgr.getCurrentState().getStorageVolumeMgr().getStorageVolumeNameOfTable(id);
         sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR).append(
                 PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME).append("\" = \"").append(volume).append("\"");
@@ -168,5 +173,13 @@ public class LakeMaterializedView extends MaterializedView {
             return CatalogUtils.addEscapeCharacter(comment);
         }
         return TableType.MATERIALIZED_VIEW.name();
+    }
+
+    @Override
+    public void gsonPostProcess() throws IOException {
+        super.gsonPostProcess();
+        if (getMaxColUniqueId() <= 0) {
+            setMaxColUniqueId(LakeTableHelper.restoreColumnUniqueId(this));
+        }
     }
 }

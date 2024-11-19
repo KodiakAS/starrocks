@@ -56,7 +56,6 @@ public abstract class LoadTask extends PriorityLeaderTask {
     protected LoadTaskCallback callback;
     protected TaskAttachment attachment;
     protected FailMsg failMsg = new FailMsg();
-    protected int retryTime = 1;
 
     public LoadTask(LoadTaskCallback callback, TaskType taskType, int priority) {
         super(priority);
@@ -74,8 +73,13 @@ public abstract class LoadTask extends PriorityLeaderTask {
             // callback on pending task finished
             callback.onTaskFinished(attachment);
             isFinished = true;
+        } catch (LoadException e) {
+            failMsg.setMsg(e.getMessage() == null ? "" : e.getMessage());
+            LOG.warn(new LogBuilder(LogKey.LOAD_JOB, callback.getCallbackId())
+                    .add("error_msg", "Failed to execute load task").build(), e);
         } catch (UserException e) {
             failMsg.setMsg(e.getMessage() == null ? "" : e.getMessage());
+            failMsg.setCancelType(FailMsg.CancelType.USER_CANCEL);
             LOG.warn(new LogBuilder(LogKey.LOAD_JOB, callback.getCallbackId())
                     .add("error_msg", "Failed to execute load task").build(), e);
         } catch (Exception e) {
@@ -104,16 +108,6 @@ public abstract class LoadTask extends PriorityLeaderTask {
      * @throws UserException task is failed
      */
     abstract void executeTask() throws Exception;
-
-    public int getRetryTime() {
-        return retryTime;
-    }
-
-    // Derived class may need to override this.
-    public void updateRetryInfo() {
-        this.retryTime--;
-        this.signature = GlobalStateMgr.getCurrentState().getNextId();
-    }
 
     public TaskType getTaskType() {
         return taskType;

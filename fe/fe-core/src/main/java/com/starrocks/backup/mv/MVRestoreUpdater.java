@@ -213,13 +213,14 @@ public class MVRestoreUpdater {
 
         String remoteDbName = baseTableInfo.getDbName();
         String remoteTableName = baseTableInfo.getTableName();
-        Database baseTableDb = GlobalStateMgr.getCurrentState().getDb(remoteDbName);
+        Database baseTableDb = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(remoteDbName);
         if (baseTableDb == null) {
             LOG.warn(String.format("Materialized view %s can not find old base table's db name:%s.%s",
                     mv.getName(), remoteDbName, remoteTableName));
             return false;
         }
-        Table baseTable = baseTableDb.getTable(remoteTableName);
+        Table baseTable = GlobalStateMgr.getCurrentState().getLocalMetastore()
+                    .getTable(baseTableDb.getFullName(), remoteTableName);
         if (baseTable == null) {
             LOG.warn(String.format("Materialized view %s can not find old base table:%s.%s",
                     mv.getName(), remoteDbName, remoteTableName));
@@ -232,14 +233,12 @@ public class MVRestoreUpdater {
         return true;
     }
 
-    public static Pair<Boolean, Optional<MvId>> restoreBaseTableInfoIfRestored(
-            Database restoreDb,
-            MvRestoreContext mvRestoreContext,
-            MaterializedView mv,
-            MvBaseTableBackupInfo mvBaseTableBackupInfo,
-            BaseTableInfo baseTableInfo,
-            Map<TableName, TableName> remoteToLocalTableName,
-            List<BaseTableInfo> newBaseTableInfos) {
+    public static Pair<Boolean, Optional<MvId>> restoreBaseTableInfoIfRestored(MvRestoreContext mvRestoreContext,
+                                                                               MaterializedView mv,
+                                                                               MvBaseTableBackupInfo mvBaseTableBackupInfo,
+                                                                               BaseTableInfo baseTableInfo,
+                                                                               Map<TableName, TableName> remoteToLocalTableName,
+                                                                               List<BaseTableInfo> newBaseTableInfos) {
         String remoteDbName = baseTableInfo.getDbName();
         String remoteTableName = baseTableInfo.getTableName();
         TableName remoteDbTblName = new TableName(remoteDbName, remoteTableName);
@@ -250,9 +249,16 @@ public class MVRestoreUpdater {
             return Pair.create(false, Optional.empty());
         }
 
+        String localDbName = mvBaseTableBackupInfo.getLocalDbName();
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(localDbName);
         String localTableName = mvBaseTableBackupInfo.getLocalTableName();
-        Table localTable = restoreDb.getTable(localTableName);
-        remoteToLocalTableName.put(remoteDbTblName, new TableName(restoreDb.getFullName(), localTableName));
+        if (db == null) {
+            LOG.warn("BaseTable(local) {}'s db {} is not found, remote db/table: {}/{}",
+                    localTableName, localDbName, remoteDbName, remoteTableName);
+            return Pair.create(false, Optional.empty());
+        }
+        Table localTable = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), localTableName);
+        remoteToLocalTableName.put(remoteDbTblName, new TableName(db.getFullName(), localTableName));
         if (localTable == null) {
             LOG.warn("Materialized view {} can not find the base table {}, old base table name:{}",
                     mv.getName(), localTableName, remoteTableName);
@@ -260,14 +266,14 @@ public class MVRestoreUpdater {
         }
 
         // restore materialized view's associated base table's mvIds.
-        Optional<MvId> oldMvIdOpt = restoreBaseTable(mv, restoreDb, localTable, mvRestoreContext);
+        Optional<MvId> oldMvIdOpt = restoreBaseTable(mv, db, localTable, mvRestoreContext);
         // restore materialized view's version map if base table is also backed up and restore.
         Map<Long, Map<String, MaterializedView.BasePartitionInfo>> baseTableVisibleVersionMap =
                 mv.getRefreshScheme().getAsyncRefreshContext().getBaseTableVisibleVersionMap();
         restoreBaseTableVersionMap(baseTableVisibleVersionMap, localTable, mvBaseTableBackupInfo);
 
         // update base table info since materialized view's db or base table info may be changed.
-        BaseTableInfo newBaseTableInfo = new BaseTableInfo(restoreDb.getId(), restoreDb.getFullName(), localTableName,
+        BaseTableInfo newBaseTableInfo = new BaseTableInfo(db.getId(), db.getFullName(), localTableName,
                 localTable.getId());
         newBaseTableInfos.add(newBaseTableInfo);
         return Pair.create(true, oldMvIdOpt);

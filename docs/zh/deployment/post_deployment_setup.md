@@ -1,5 +1,5 @@
 ---
-displayed_sidebar: "Chinese"
+displayed_sidebar: docs
 ---
 
 # 部署后设置
@@ -29,8 +29,8 @@ displayed_sidebar: "Chinese"
 
 > **说明**
 >
-> - 重置密码后请务必妥善保管。如果您忘记了密码，请参阅 [重置丢失的 root 密码](../administration/User_privilege.md#重置丢失的-root-密码) 了解详细说明。
-> - 完成部署后设置后，您可以创建新用户和角色来管理团队内的权限。有关详细说明，请参阅 [管理用户权限](../administration/User_privilege.md)。
+> - 重置密码后请务必妥善保管。如果您忘记了密码，请参阅 [重置丢失的 root 密码](../administration/user_privs/User_privilege.md#重置丢失的-root-密码) 了解详细说明。
+> - 完成部署后设置后，您可以创建新用户和角色来管理团队内的权限。有关详细说明，请参阅 [管理用户权限](../administration/user_privs/User_privilege.md)。
 
 ## 设置必要的系统变量
 
@@ -74,7 +74,7 @@ displayed_sidebar: "Chinese"
   SET GLOBAL pipeline_dop = 0;
   ```
 
-有关系统变量的更多信息，请参阅 [系统变量](../reference/System_variable.md)。
+有关系统变量的更多信息，请参阅 [系统变量](../sql-reference/System_variable.md)。
 
 ## 设置用户属性
 
@@ -82,7 +82,7 @@ displayed_sidebar: "Chinese"
 
 ```SQL
 -- 将 <username> 替换为需要增加最大连接数的用户名。
-SET PROPERTY FOR '<username>' 'max_user_connections' = '1000';
+ALTER USER '<username>' SET PROPERTIES ("max_user_connections" = "1000");
 ```
 
 ## 下一步

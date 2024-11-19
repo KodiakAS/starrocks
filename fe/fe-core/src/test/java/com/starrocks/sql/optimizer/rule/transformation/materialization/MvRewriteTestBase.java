@@ -17,17 +17,13 @@ package com.starrocks.sql.optimizer.rule.transformation.materialization;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
 import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.LocalTablet;
-import com.starrocks.catalog.MaterializedIndex;
+import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.MaterializedView;
-import com.starrocks.catalog.OlapTable;
-import com.starrocks.catalog.Partition;
-import com.starrocks.catalog.Replica;
+import com.starrocks.catalog.MvRefreshArbiter;
+import com.starrocks.catalog.MvUpdateInfo;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
 import com.starrocks.common.Pair;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.pseudocluster.PseudoCluster;
@@ -36,8 +32,6 @@ import com.starrocks.qe.StmtExecutor;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.Analyzer;
 import com.starrocks.sql.ast.CreateMaterializedViewStatement;
-import com.starrocks.sql.ast.DmlStmt;
-import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.StatementBase;
@@ -51,12 +45,11 @@ import com.starrocks.sql.optimizer.operator.physical.PhysicalScanOperator;
 import com.starrocks.sql.optimizer.transformer.LogicalPlan;
 import com.starrocks.sql.optimizer.transformer.RelationTransformer;
 import com.starrocks.sql.parser.ParsingException;
+import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import mockit.Mock;
-import mockit.MockUp;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.junit.AfterClass;
@@ -98,24 +91,6 @@ public class MvRewriteTestBase {
 
         // set default config for async mvs
         UtFrameUtils.setDefaultConfigForAsyncMVTest(connectContext);
-
-        new MockUp<StmtExecutor>() {
-            @Mock
-            public void handleDMLStmt(ExecPlan execPlan, DmlStmt stmt) throws Exception {
-                if (stmt instanceof InsertStmt) {
-                    InsertStmt insertStmt = (InsertStmt) stmt;
-                    TableName tableName = insertStmt.getTableName();
-                    Database testDb = GlobalStateMgr.getCurrentState().getDb("test");
-                    OlapTable tbl = ((OlapTable) testDb.getTable(tableName.getTbl()));
-                    if (tbl != null) {
-                        for (Long partitionId : insertStmt.getTargetPartitionIds()) {
-                            Partition partition = tbl.getPartition(partitionId);
-                            setPartitionVersion(partition, partition.getVisibleVersion() + 1);
-                        }
-                    }
-                }
-            }
-        };
     }
 
     @AfterClass
@@ -127,18 +102,6 @@ public class MvRewriteTestBase {
         }
     }
 
-    private static void setPartitionVersion(Partition partition, long version) {
-        partition.setVisibleVersion(version, System.currentTimeMillis());
-        MaterializedIndex baseIndex = partition.getBaseIndex();
-        List<Tablet> tablets = baseIndex.getTablets();
-        for (Tablet tablet : tablets) {
-            List<Replica> replicas = ((LocalTablet) tablet).getImmutableReplicas();
-            for (Replica replica : replicas) {
-                replica.updateVersionInfo(version, -1, version);
-            }
-        }
-    }
-
     public String getFragmentPlan(String sql) throws Exception {
         String s = UtFrameUtils.getPlanAndFragment(connectContext, sql).second.
                 getExplainString(TExplainLevel.NORMAL);
@@ -146,6 +109,10 @@ public class MvRewriteTestBase {
     }
 
     public String getFragmentPlan(String sql, String traceModule) throws Exception {
+        return getFragmentPlan(sql, TExplainLevel.NORMAL, traceModule);
+    }
+
+    public String getFragmentPlan(String sql, TExplainLevel level, String traceModule) throws Exception {
         Pair<String, Pair<ExecPlan, String>> result =
                 UtFrameUtils.getFragmentPlanWithTrace(connectContext, sql, traceModule);
         Pair<ExecPlan, String> execPlanWithQuery = result.second;
@@ -153,12 +120,12 @@ public class MvRewriteTestBase {
         if (!Strings.isNullOrEmpty(traceLog)) {
             System.out.println(traceLog);
         }
-        return execPlanWithQuery.first.getExplainString(TExplainLevel.NORMAL);
+        return execPlanWithQuery.first.getExplainString(level);
     }
 
     public static Table getTable(String dbName, String mvName) {
-        Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
-        Table table = db.getTable(mvName);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
+        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), mvName);
         Assert.assertNotNull(table);
         return table;
     }
@@ -168,6 +135,13 @@ public class MvRewriteTestBase {
         Assert.assertTrue(table instanceof MaterializedView);
         MaterializedView mv = (MaterializedView) table;
         return mv;
+    }
+
+    protected void refreshMaterializedViewWithPartition(String dbName, String mvName, String partitionStart,
+                                                        String partitionEnd) throws SQLException {
+        cluster.runSql(dbName, String.format("refresh materialized view %s partition start (\"%s\") " +
+                "end (\"%s\") with sync mode", mvName, partitionStart, partitionEnd));
+        cluster.runSql(dbName, String.format("analyze table %s with sync mode", mvName));
     }
 
     protected void refreshMaterializedView(String dbName, String mvName) throws SQLException {
@@ -255,14 +229,71 @@ public class MvRewriteTestBase {
         }
     }
 
+    public static MvUpdateInfo getMvUpdateInfo(MaterializedView mv) {
+        return MvRefreshArbiter.getMVTimelinessUpdateInfo(mv, true);
+    }
+
     public static Set<String> getPartitionNamesToRefreshForMv(MaterializedView mv) {
-        Set<String> toRefreshPartitions = Sets.newHashSet();
-        mv.getPartitionNamesToRefreshForMv(toRefreshPartitions, true);
-        return toRefreshPartitions;
+        MvUpdateInfo mvUpdateInfo = MvRefreshArbiter.getMVTimelinessUpdateInfo(mv, true);
+        Preconditions.checkState(mvUpdateInfo != null);
+        return mvUpdateInfo.getMvToRefreshPartitionNames();
     }
 
     public static void executeInsertSql(ConnectContext connectContext, String sql) throws Exception {
         connectContext.setQueryId(UUIDUtil.genUUID());
-        new StmtExecutor(connectContext, sql).execute();
+        StatementBase statement = SqlParser.parseSingleStatement(sql, connectContext.getSessionVariable().getSqlMode());
+        new StmtExecutor(connectContext, statement).execute();
+    }
+
+    /**
+     * Add list partition with one value
+     * @param tbl table name
+     * @param pName partition name
+     * @param pVal partition value
+     */
+    protected void addListPartition(String tbl, String pName, String pVal) {
+        String addPartitionSql = String.format("ALTER TABLE %s ADD PARTITION %s VALUES IN ('%s')", tbl, pName, pVal);
+        System.out.println(addPartitionSql);
+
+        StatementBase stmt = SqlParser.parseSingleStatement(addPartitionSql, connectContext.getSessionVariable().getSqlMode());
+        try {
+            new StmtExecutor(connectContext, stmt).execute();
+        } catch (Exception e) {
+            Assert.fail("add partition failed:" + e);
+        }
+    }
+
+    /**
+     * Add list partition with two values
+     * @param tbl table name
+     * @param pName partition name
+     * @param pVal1 the first partition value
+     * @param pVal2 the second partition value
+     */
+    protected void addListPartition(String tbl, String pName, String pVal1, String pVal2) {
+        String addPartitionSql = String.format("ALTER TABLE %s ADD PARTITION %s VALUES IN (('%s', '%s'))", tbl, pName, pVal1,
+                pVal2);
+        System.out.println(addPartitionSql);
+        StatementBase stmt = SqlParser.parseSingleStatement(addPartitionSql, connectContext.getSessionVariable().getSqlMode());
+        try {
+            new StmtExecutor(connectContext, stmt).execute();
+        } catch (Exception e) {
+            Assert.fail("add partition failed:" + e);
+        }
+    }
+
+    public static String getAggFunction(String funcName, String aggArg) {
+        if (funcName.equals(FunctionSet.ARRAY_AGG)) {
+            funcName = String.format("array_agg(distinct %s)", aggArg);
+        } else if (funcName.equals(FunctionSet.BITMAP_UNION)) {
+            funcName = String.format("bitmap_union(to_bitmap(%s))", aggArg);
+        } else if (funcName.equals(FunctionSet.PERCENTILE_UNION)) {
+            funcName = String.format("percentile_union(percentile_hash(%s))", aggArg);
+        } else if (funcName.equals(FunctionSet.HLL_UNION)) {
+            funcName = String.format("hll_union(hll_hash(%s))", aggArg);
+        } else {
+            funcName = String.format("%s(%s)", funcName, aggArg);
+        }
+        return funcName;
     }
 }

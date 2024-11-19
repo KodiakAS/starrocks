@@ -62,6 +62,7 @@
 #include "storage/snapshot_manager.h"
 #include "storage/tablet_updates.h"
 #include "util/defer_op.h"
+#include "util/network_util.h"
 #include "util/string_parser.hpp"
 #include "util/thrift_rpc_helper.h"
 
@@ -108,6 +109,10 @@ Status EngineCloneTask::execute() {
         }
         if (Tablet::check_migrate(tablet)) {
             return Status::Corruption("Fail to check migrate tablet");
+        }
+        // if tablet is under dropping but not finished yet, reject the clone request.
+        if (tablet->is_dropping()) {
+            return Status::Corruption("Tablet is under dropping");
         }
         Status st;
         if (tablet->updates() != nullptr) {
@@ -162,7 +167,7 @@ Status EngineCloneTask::_do_clone_primary_tablet(Tablet* tablet) {
         if (st.ok()) {
             st = _finish_clone_primary(tablet, download_path);
         } else if (st.is_not_found()) {
-            LOG(INFO) << fmt::format(
+            VLOG(1) << fmt::format(
                     "No missing version found from src replica. tablet: {}, src BE:{}:{}, type: {}, "
                     "missing_version_ranges: {}, committed_version: {}",
                     tablet->tablet_id(), _clone_req.src_backends[0].host, _clone_req.src_backends[0].be_port,
@@ -401,9 +406,9 @@ Status EngineCloneTask::_clone_copy(DataDir& data_dir, const string& local_data_
             continue;
         }
 
-        std::string download_url = strings::Substitute("http://$0:$1$2?token=$3&type=V2&file=$4/$5/$6/", src.host,
-                                                       src.http_port, HTTP_REQUEST_PREFIX, token, snapshot_path,
-                                                       _clone_req.tablet_id, _clone_req.schema_hash);
+        std::string download_url = strings::Substitute(
+                "http://$0$1?token=$2&type=V2&file=$3/$4/$5/", get_host_port(src.host, src.http_port),
+                HTTP_REQUEST_PREFIX, token, snapshot_path, _clone_req.tablet_id, _clone_req.schema_hash);
 
         st = _download_files(&data_dir, download_url, local_path);
         (void)_release_snapshot(src.host, src.be_port, snapshot_path);
@@ -611,7 +616,7 @@ Status EngineCloneTask::_download_files(DataDir* data_dir, const std::string& re
 
         std::string local_file_path = local_path + file_name;
 
-        VLOG(1) << "Downloading " << remote_file_url << " to " << local_path << ". bytes=" << file_size
+        VLOG(2) << "Downloading " << remote_file_url << " to " << local_path << ". bytes=" << file_size
                 << " timeout=" << estimate_timeout;
 
         auto download_cb = [&remote_file_url, estimate_timeout, &local_file_path, file_size](HttpClient* client) {
@@ -940,7 +945,8 @@ Status EngineCloneTask::_finish_clone_primary(Tablet* tablet, const std::string&
     }
     auto snapshot_meta = std::move(res).value();
 
-    RETURN_IF_ERROR(SnapshotManager::instance()->assign_new_rowset_id(&snapshot_meta, clone_dir));
+    RETURN_IF_ERROR(
+            SnapshotManager::instance()->assign_new_rowset_id(&snapshot_meta, clone_dir, tablet->tablet_schema()));
 
     // check all files in /clone and /tablet
     std::set<std::string> clone_files;

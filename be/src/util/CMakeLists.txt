@@ -30,6 +30,7 @@ set(UTIL_FILES
   coding.cpp
   cpu_info.cpp
   cpu_usage_info.cpp
+  cpu_util.cpp
   crc32c.cpp
   date_func.cpp
   dynamic_util.cpp
@@ -40,6 +41,7 @@ set(UTIL_FILES
   hash_util.hpp
   json_util.cpp
   json.cpp
+  json_flattener.cpp
   json_converter.cpp
   starrocks_metrics.cpp
   mem_info.cpp
@@ -62,7 +64,6 @@ set(UTIL_FILES
   url_parser.cpp
   url_coding.cpp
   mysql_row_buffer.cpp
-  error_util.cc
   spinlock.cc
   file_util.cpp
   filesystem_util.cc
@@ -103,6 +104,7 @@ set(UTIL_FILES
   bthreads/future.h
   bthreads/future_impl.cpp
   hash_util.cpp
+  internal_service_recoverable_stub.cpp
 )
 
 add_library(Util STATIC

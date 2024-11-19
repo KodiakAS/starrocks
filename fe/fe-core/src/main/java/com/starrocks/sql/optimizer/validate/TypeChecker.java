@@ -40,7 +40,6 @@ import static com.starrocks.catalog.FunctionSet.ANY_VALUE;
 import static com.starrocks.catalog.FunctionSet.APPROX_COUNT_DISTINCT;
 import static com.starrocks.catalog.FunctionSet.AVG;
 import static com.starrocks.catalog.FunctionSet.BITMAP_UNION_INT;
-import static com.starrocks.catalog.FunctionSet.COUNT;
 import static com.starrocks.catalog.FunctionSet.HLL_RAW;
 import static com.starrocks.catalog.FunctionSet.INTERSECT_COUNT;
 import static com.starrocks.catalog.FunctionSet.MAX;
@@ -51,7 +50,6 @@ import static com.starrocks.catalog.FunctionSet.NDV;
 import static com.starrocks.catalog.FunctionSet.PERCENTILE_APPROX;
 import static com.starrocks.catalog.FunctionSet.PERCENTILE_CONT;
 import static com.starrocks.catalog.FunctionSet.PERCENTILE_UNION;
-import static com.starrocks.catalog.FunctionSet.STDDEV;
 import static com.starrocks.catalog.FunctionSet.SUM;
 
 public class TypeChecker implements PlanValidator.Checker {
@@ -86,8 +84,7 @@ public class TypeChecker implements PlanValidator.Checker {
         @Override
         public Void visitLogicalAggregate(OptExpression optExpression, Void context) {
             LogicalAggregationOperator operator = (LogicalAggregationOperator) optExpression.getOp();
-            checkAggCall(operator.getAggregations(), operator.getType(), operator.isSplit(),
-                    operator.getSingleDistinctFunctionPos());
+            checkAggCall(operator.getAggregations(), operator.getType(), operator.isSplit(), operator.hasRemoveDistinctFunc());
             visit(optExpression, context);
             return null;
         }
@@ -104,8 +101,7 @@ public class TypeChecker implements PlanValidator.Checker {
         @Override
         public Void visitPhysicalHashAggregate(OptExpression optExpression, Void context) {
             PhysicalHashAggregateOperator operator = (PhysicalHashAggregateOperator) optExpression.getOp();
-            checkAggCall(operator.getAggregations(), operator.getType(), operator.isSplit(),
-                    operator.getSingleDistinctFunctionPos());
+            checkAggCall(operator.getAggregations(), operator.getType(), operator.isSplit(), operator.hasRemovedDistinctFunc());
             visit(optExpression, context);
             return null;
         }
@@ -113,7 +109,12 @@ public class TypeChecker implements PlanValidator.Checker {
         @Override
         public Void visitPhysicalAnalytic(OptExpression optExpression, Void context) {
             PhysicalWindowOperator operator = (PhysicalWindowOperator) optExpression.getOp();
-            checkFuncCall(operator.getAnalyticCall());
+            // if input is binary, which only happen with rank-pre-agg optimization
+            // in this case, The type of col -> aggCall in intermediate phase is a bit of messy, check it may
+            // lead to forbid normal plan.
+            if (!operator.isInputIsBinary()) {
+                checkFuncCall(operator.getAnalyticCall());
+            }
             visit(optExpression, context);
             return null;
         }
@@ -148,26 +149,36 @@ public class TypeChecker implements PlanValidator.Checker {
 
 
         private void checkAggCall(Map<ColumnRefOperator, CallOperator> aggregations, AggType aggType, boolean isSplit,
-                                  int singleDistinctFunctionPos) {
-            int index = -1;
-            boolean hasSingleDistinct = singleDistinctFunctionPos != - 1;
+                                  boolean hasRemoveDistinctFunc) {
             for (Map.Entry<ColumnRefOperator, CallOperator> entry : aggregations.entrySet()) {
-                index++;
                 ColumnRefOperator outputCol = entry.getKey();
                 CallOperator aggCall = entry.getValue();
                 boolean isMergeAggFn = false;
                 switch (aggType) {
                     case LOCAL:
-                        isMergeAggFn = isSplit && hasSingleDistinct && (index != singleDistinctFunctionPos);
+                        // In 3-phase agg, the global agg should set these not distinct agg callOperator to mergeAggFn.
+                        // Sometimes we may further split the top global agg from a 3-phase agg into a two phase agg,
+                        // For example, local agg -> distinct global agg -> exchange with group by keys -> global agg
+                        // to
+                        // local agg -> distinct global agg -> exchange with group by keys + distinct keys ->
+                        // local agg -> exchange with group by keys -> global agg.
+                        // The added exchange steps helps us distribute data more evenly across multiple machines.
+                        // So we also need to set mergeAggFn flag into the second local agg for those not distinct
+                        // agg callOperator.
+                        isMergeAggFn = isSplit && hasRemoveDistinctFunc && !aggCall.isRemovedDistinct();
                         break;
                     case GLOBAL:
-                        isMergeAggFn = isSplit && (!hasSingleDistinct || index != singleDistinctFunctionPos);
+                        if (hasRemoveDistinctFunc) {
+                            isMergeAggFn = !aggCall.isRemovedDistinct();
+                        } else if (isSplit) {
+                            isMergeAggFn = true;
+                        }
                         break;
                     case DISTINCT_GLOBAL:
                         isMergeAggFn = true;
                         break;
                     case DISTINCT_LOCAL:
-                        isMergeAggFn = index != singleDistinctFunctionPos;
+                        isMergeAggFn = !aggCall.isRemovedDistinct();
                 }
 
                 if (aggType.isGlobal()) {
@@ -196,6 +207,12 @@ public class TypeChecker implements PlanValidator.Checker {
                 throw new IllegalArgumentException("percentile_approx " +
                         "requires the second parameter's type is numeric constant type");
             }
+
+            if (arguments.size() == 3 && !(arguments.get(2) instanceof ConstantOperator)) {
+                throw new IllegalArgumentException("percentile_approx " +
+                        "requires the third parameter's type is numeric constant type");
+            }
+
             ConstantOperator rate = (ConstantOperator) arg1;
             if (rate.getDouble() < 0 || rate.getDouble() > 1) {
                 throw new SemanticException("percentile_approx second parameter'value must be between 0 and 1");
@@ -208,9 +225,6 @@ public class TypeChecker implements PlanValidator.Checker {
             Type[] definedTypes = aggCall.getFunction().getArgs();
             List<Type> argTypes = arguments.stream().map(ScalarOperator::getType).collect(Collectors.toList());
             switch (functionName) {
-                case COUNT:
-                case STDDEV:
-                    break;
                 case MIN:
                 case MAX:
                 case ANY_VALUE:

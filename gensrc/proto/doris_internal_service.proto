@@ -34,7 +34,7 @@
 
 // NOTE(XXX): DEPRECATED, just use to compatible with old version.
 // Make system can grayscale upgrade
-syntax="proto2";
+syntax = "proto2";
 
 import "internal_service.proto";
 
@@ -64,6 +64,8 @@ service PBackendService {
     rpc transmit_chunk_via_http(starrocks.PHttpRequest) returns (starrocks.PTransmitChunkResult);
     rpc tablet_writer_add_chunk(starrocks.PTabletWriterAddChunkRequest) returns (starrocks.PTabletWriterAddBatchResult);
     rpc tablet_writer_add_chunks(starrocks.PTabletWriterAddChunksRequest) returns (starrocks.PTabletWriterAddBatchResult);
+    rpc tablet_writer_add_chunk_via_http(starrocks.PHttpRequest) returns (starrocks.PTabletWriterAddBatchResult);
+    rpc tablet_writer_add_chunks_via_http(starrocks.PHttpRequest) returns (starrocks.PTabletWriterAddBatchResult);
     rpc tablet_writer_add_segment(starrocks.PTabletWriterAddSegmentRequest) returns (starrocks.PTabletWriterAddSegmentResult);
     rpc transmit_runtime_filter(starrocks.PTransmitRuntimeFilterParams) returns (starrocks.PTransmitRuntimeFilterResult);
 
@@ -82,4 +84,6 @@ service PBackendService {
     rpc list_fail_point(starrocks.PListFailPointRequest) returns (starrocks.PListFailPointResponse);
 
     rpc process_dictionary_cache(starrocks.PProcessDictionaryCacheRequest) returns (starrocks.PProcessDictionaryCacheResult);
+    rpc stream_load(starrocks.PStreamLoadRequest)
+        returns (starrocks.PStreamLoadResponse);
 };

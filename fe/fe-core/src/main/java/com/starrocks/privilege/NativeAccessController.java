@@ -20,10 +20,11 @@ import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.InternalCatalog;
+import com.starrocks.common.ErrorCode;
+import com.starrocks.common.ErrorReport;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.sql.ast.pipe.PipeName;
-import com.starrocks.sql.common.MetaUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -327,6 +328,9 @@ public class NativeAccessController implements AccessController {
     }
 
     private static String getFullyQualifiedNameFromListAllowNull(List<String> objectTokens) {
+        if (objectTokens == null) {
+            return "";
+        }
         return objectTokens.stream()
                 .map(e -> e == null ? "null" : e)
                 .collect(Collectors.joining("."));
@@ -344,7 +348,7 @@ public class NativeAccessController implements AccessController {
                 throw new AccessDeniedException();
             }
         } catch (PrivObjNotFoundException e) {
-            LOG.info("Object not found when checking any action on {} {}, message: {}",
+            LOG.debug("Object not found when checking any action on {} {}, message: {}",
                     objectType.name(), getFullyQualifiedNameFromListAllowNull(objectTokens), e.getMessage());
         } catch (PrivilegeException e) {
             LOG.warn("caught exception when checking any action on {} {}",
@@ -361,7 +365,11 @@ public class NativeAccessController implements AccessController {
         if (dbName == null) {
             databaseId = PrivilegeBuiltinConstants.GLOBAL_FUNCTION_DEFAULT_DATABASE_ID;
         } else {
-            Database database = MetaUtils.getDatabase(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME, dbName);
+            Database database = GlobalStateMgr.getCurrentState().getMetadataMgr()
+                    .getDb(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME, dbName);
+            if (database == null) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_DB_ERROR, dbName);
+            }
             databaseId = database.getId();
         }
 
@@ -389,5 +397,17 @@ public class NativeAccessController implements AccessController {
                     objectType.name(), functionId, e);
             throw new AccessDeniedException();
         }
+    }
+
+    @Override
+    public void checkWarehouseAction(UserIdentity currentUser, Set<Long> roleIds, String name, PrivilegeType privilegeType)
+            throws AccessDeniedException {
+        checkObjectTypeAction(currentUser, roleIds, privilegeType, ObjectType.WAREHOUSE,
+                Collections.singletonList(name));
+    }
+
+    @Override
+    public void checkAnyActionOnWarehouse(UserIdentity currentUser, Set<Long> roleIds, String name) throws AccessDeniedException {
+        checkAnyActionOnObject(currentUser, roleIds, ObjectType.WAREHOUSE, Collections.singletonList(name));
     }
 }

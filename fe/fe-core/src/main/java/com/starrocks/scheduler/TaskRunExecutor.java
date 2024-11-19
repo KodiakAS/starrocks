@@ -30,24 +30,30 @@ public class TaskRunExecutor {
     private final ExecutorService taskRunPool = ThreadPoolManager
             .newDaemonCacheThreadPool(Config.max_task_runs_threads_num, "starrocks-taskrun-pool", true);
 
-    public void executeTaskRun(TaskRun taskRun) {
+    /**
+     * Async execute a task-run, use the return value to indicate submit success or not
+     */
+    public boolean executeTaskRun(TaskRun taskRun) {
         if (taskRun == null) {
-            return;
+            return false;
         }
         TaskRunStatus status = taskRun.getStatus();
         if (status == null) {
-            return;
+            LOG.warn("TaskRun {}/{} has no state, avoid execute it again", status.getTaskName(),
+                    status.getQueryId());
+            return false;
         }
-        if (status.getState() == Constants.TaskRunState.SUCCESS ||
-                status.getState() == Constants.TaskRunState.FAILED) {
-            LOG.warn("TaskRun {} is in final status {} ", status.getQueryId(), status.getState());
-            return;
+        if (status.getState() != Constants.TaskRunState.PENDING) {
+            LOG.warn("TaskRun {}/{} is in {} state, avoid execute it again", status.getTaskName(),
+                    status.getQueryId(), status.getState());
+            return false;
         }
 
+        // Synchronously update the status, to make sure they can be persisted
+        status.setState(Constants.TaskRunState.RUNNING);
+        status.setProcessStartTime(System.currentTimeMillis());
+
         CompletableFuture<Constants.TaskRunState> future = CompletableFuture.supplyAsync(() -> {
-            status.setState(Constants.TaskRunState.RUNNING);
-            // set process start time
-            status.setProcessStartTime(System.currentTimeMillis());
             try {
                 boolean isSuccess = taskRun.executeTaskRun();
                 if (isSuccess) {
@@ -74,6 +80,7 @@ public class TaskRunExecutor {
                 taskRun.getFuture().completeExceptionally(e);
             }
         });
+        return true;
     }
 
 }

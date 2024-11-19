@@ -85,12 +85,14 @@ import com.starrocks.http.rest.ShowProcAction;
 import com.starrocks.http.rest.ShowRuntimeInfoAction;
 import com.starrocks.http.rest.StopFeAction;
 import com.starrocks.http.rest.StorageTypeCheckAction;
+import com.starrocks.http.rest.StreamLoadMetaAction;
 import com.starrocks.http.rest.SyncCloudTableMetaAction;
 import com.starrocks.http.rest.TableQueryPlanAction;
 import com.starrocks.http.rest.TableRowCountAction;
 import com.starrocks.http.rest.TableSchemaAction;
 import com.starrocks.http.rest.TransactionLoadAction;
 import com.starrocks.http.rest.TriggerAction;
+import com.starrocks.http.rest.v2.TablePartitionAction;
 import com.starrocks.leader.MetaHelper;
 import com.starrocks.metric.GaugeMetric;
 import com.starrocks.metric.GaugeMetricImpl;
@@ -148,6 +150,7 @@ public class HttpServer {
     private void registerActions() throws IllegalArgException {
         // add rest action
         LoadAction.registerAction(controller);
+        StreamLoadMetaAction.registerAction(controller);
         TransactionLoadAction.registerAction(controller);
         GetLoadInfoAction.registerAction(controller);
         SetConfigAction.registerAction(controller);
@@ -213,6 +216,8 @@ public class HttpServer {
         // external usage
         TableRowCountAction.registerAction(controller);
         TableSchemaAction.registerAction(controller);
+        com.starrocks.http.rest.v2.TableSchemaAction.registerAction(controller);
+        TablePartitionAction.registerAction(controller);
         TableQueryPlanAction.registerAction(controller);
 
         BootstrapFinishAction.registerAction(controller);
@@ -229,7 +234,8 @@ public class HttpServer {
             ch.pipeline().addLast(new HttpServerCodec(
                             Config.http_max_initial_line_length,
                             Config.http_max_header_size,
-                            Config.http_max_chunk_size))
+                            Config.http_max_chunk_size,
+                            Config.enable_http_validate_headers))
                     .addLast(new StarRocksHttpPostObjectAggregator(100 * 65536))
                     .addLast(new ChunkedWriteHandler())
                     // add content compressor

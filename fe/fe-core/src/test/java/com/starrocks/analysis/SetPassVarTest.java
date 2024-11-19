@@ -39,8 +39,6 @@ import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.authentication.UserAuthenticationInfo;
 import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.UserException;
-import com.starrocks.mysql.privilege.Auth;
-import com.starrocks.mysql.privilege.MockedAuth;
 import com.starrocks.privilege.AuthorizationMgr;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SetExecutor;
@@ -55,7 +53,6 @@ import com.starrocks.sql.ast.SystemVariable;
 import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
-import mockit.Mocked;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -63,15 +60,11 @@ import org.junit.Test;
 
 public class SetPassVarTest {
 
-    @Mocked
-    private Auth auth;
-    @Mocked
     private ConnectContext ctx;
 
     @Before
     public void setUp() {
-        MockedAuth.mockedAuth(auth);
-        MockedAuth.mockedConnectContext(ctx, "root", "192.168.1.1");
+        ctx = new ConnectContext();
         UserIdentity currentUser = new UserIdentity("root", "192.168.1.1");
         ctx.setCurrentUserIdentity(currentUser);
     }
@@ -131,7 +124,7 @@ public class SetPassVarTest {
         starRocksAssert.getCtx().setRemoteIP("localhost");
         authorizationManager.initBuiltinRolesAndUsers();
         ctxToRoot();
-        createUsers();
+        testUser = createUser("CREATE USER 'test' IDENTIFIED BY ''");
     }
 
     private static void ctxToTestUser() {
@@ -144,15 +137,15 @@ public class SetPassVarTest {
         starRocksAssert.getCtx().setQualifiedUser(UserIdentity.ROOT.getUser());
     }
 
-    private static void createUsers() throws Exception {
-        String createUserSql = "CREATE USER 'test' IDENTIFIED BY ''";
+    private static UserIdentity createUser(String createUserSql) throws Exception {
         CreateUserStmt createUserStmt =
                 (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(createUserSql, starRocksAssert.getCtx());
         AuthenticationMgr authenticationManager =
                 starRocksAssert.getCtx().getGlobalStateMgr().getAuthenticationMgr();
         authenticationManager.createUser(createUserStmt);
-        testUser = createUserStmt.getUserIdentity();
+        return createUserStmt.getUserIdentity();
     }
+
     @Test
     public void testSetPasswordInNewPrivilege() throws Exception {
 
@@ -169,5 +162,4 @@ public class SetPassVarTest {
         Assert.assertTrue(userAuthenticationInfo.getPassword().length > 0);
 
     }
-
 }

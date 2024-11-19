@@ -1,10 +1,10 @@
 ---
-displayed_sidebar: "Chinese"
+displayed_sidebar: docs
 ---
 
 # 从云存储导入
 
-StarRocks 支持通过两种方式从云存储系统导入大批量数据：[Broker Load](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md) 和 [INSERT](../sql-reference/sql-statements/data-manipulation/INSERT.md)。
+StarRocks 支持通过两种方式从云存储系统导入大批量数据：[Broker Load](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md) 和 [INSERT](../sql-reference/sql-statements/loading_unloading/INSERT.md)。
 
 在 3.0 及以前版本，StarRocks 只支持 Broker Load 导入方式。Broker Load 是一种异步导入方式，即您提交导入作业以后，StarRocks 会异步地执行导入作业。您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
@@ -16,9 +16,9 @@ Broker Load 能够保证单次导入事务的原子性，即单次导入的多�
 >
 > Broker Load 操作需要目标表的 INSERT 权限。如果您的用户账号没有 INSERT 权限，请参考 [GRANT](../sql-reference/sql-statements/account-management/GRANT.md) 给用户赋权。
 
-从 3.1 版本起，StarRocks 新增支持使用 INSERT 语句和 `FILES` 关键字直接从 AWS S3 导入 Parquet 或 ORC 格式的数据文件，避免了需事先创建外部表的麻烦。参见 [INSERT > 通过 FILES 关键字直接导入外部数据文件](../loading/InsertInto.md#通过-insert-into-select-以及表函数-files-导入外部数据文件)。
+从 3.1 版本起，StarRocks 新增支持使用 INSERT 语句和 `FILES` 关键字直接从 AWS S3 导入特定格式的数据文件，避免了需事先创建外部表的麻烦。参见 [INSERT > 通过 FILES 关键字直接导入外部数据文件](../loading/InsertInto.md#通过-insert-into-select-以及表函数-files-导入外部数据文件)。
 
-本文主要介绍如何使用 [Broker Load](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md) 从云存储系统导入数据。
+本文主要介绍如何使用 [Broker Load](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md) 从云存储系统导入数据。
 
 ## 支持的数据文件格式
 
@@ -30,6 +30,8 @@ Broker Load 支持如下数据文件格式：
 
 - ORC
 
+- JSON（自 3.2.3 版本起支持）
+
 > **说明**
 >
 > 对于 CSV 格式的数据，需要注意以下两点：
@@ -39,11 +41,11 @@ Broker Load 支持如下数据文件格式：
 
 ## 基本原理
 
-提交导入作业以后，FE 会生成对应的查询计划，并根据目前可用 BE 的个数和源数据文件的大小，将查询计划分配给多个 BE 执行。每个 BE 负责执行一部分导入任务。BE 在执行过程中，会从外部存储系统拉取数据，并且会在对数据进行预处理之后将数据导入到 StarRocks 中。所有 BE 均完成导入后，由 FE 最终判断导入作业是否成功。
+提交导入作业以后，FE 会生成对应的查询计划，并根据目前可用 BE（或 CN）的个数和源数据文件的大小，将查询计划分配给多个 BE（或 CN）执行。每个 BE（或 CN）负责执行一部分导入任务。BE（或 CN）在执行过程中，会从外部存储系统拉取数据，并且会在对数据进行预处理之后将数据导入到 StarRocks 中。所有 BE（或 CN）均完成导入后，由 FE 最终判断导入作业是否成功。
 
 下图展示了 Broker Load 的主要流程：
 
-![Broker Load 原理图](../assets/broker_load_how-to-work_zh.png)
+![Broker Load 原理图](../_assets/broker_load_how-to-work_zh.png)
 
 ## 准备数据样例
 
@@ -69,7 +71,7 @@ Broker Load 支持如下数据文件格式：
 
 2. 将 `file1.csv` 和 `file2.csv` 上传到云存储空间的指定路径下。这里假设分别上传到 AWS S3 存储空间 `bucket_s3` 里的 `input` 文件夹下、 Google GCS 存储空间 `bucket_gcs` 里的 `input` 文件夹下、阿里云 OSS 存储空间 `bucket_oss` 里的 `input` 文件夹下、腾讯云 COS 存储空间 `bucket_cos` 里的 `input` 文件夹下、华为云 OBS 存储空间 `bucket_obs` 里的 `input` 文件夹下、其他兼容 S3 协议的对象存储（如 MinIO）空间 `bucket_minio` 里的 `input` 文件夹下、以及 Azure Storage 的指定路径下。
 
-3. 登录 StarRocks 数据库（假设为 `test_db`），创建两张主键模型表，`table1` 和 `table2`。两张表都包含 `id`、`name` 和 `score` 三列，分别代表用户 ID、用户姓名和用户得分，主键为 `id` 列，如下所示：
+3. 登录 StarRocks 数据库（假设为 `test_db`），创建两张主键表，`table1` 和 `table2`。两张表都包含 `id`、`name` 和 `score` 三列，分别代表用户 ID、用户姓名和用户得分，主键为 `id` 列，如下所示：
 
    ```SQL
    CREATE TABLE `table1`
@@ -97,7 +99,7 @@ Broker Load 支持如下数据文件格式：
 
 注意，Broker Load 支持通过 S3 或 S3A 协议访问 AWS S3，因此从 AWS S3 导入数据时，您在文件路径 (`DATA INFILE`) 中传入的目标文件的 S3 URI 可以使用 `s3://` 或 `s3a://` 作为前缀。
 
-另外注意，下述命令以 CSV 格式和基于 Instance Profile 的认证方式为例。有关如何导入其他格式的数据、以及使用其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+另外注意，下述命令以 CSV 格式和基于 Instance Profile 的认证方式为例。有关如何导入其他格式的数据、以及使用其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -128,7 +130,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -172,7 +174,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -225,7 +227,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -261,7 +263,7 @@ PROPERTIES
 
 注意，由于 Broker Load 只支持通过 gs 协议访问 Google GCS，因此从 Google GCS 导入数据时，必须确保您在文件路径 (`DATA INFILE`) 中传入的目标文件的 GCS URI 使用 `gs://` 作为前缀。
 
-另外注意，下述命令以 CSV 格式和基于 VM 的认证方式为例。有关如何导入其他格式的数据、以及使用其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+另外注意，下述命令以 CSV 格式和基于 VM 的认证方式为例。有关如何导入其他格式的数据、以及使用其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -291,7 +293,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -334,7 +336,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -386,7 +388,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -430,7 +432,7 @@ PROPERTIES
   - 如果使用 HTTP 协议进行访问，请使用 `abfs://` 作为前缀，例如，`abfs://<container>@<storage_account>.dfs.core.windows.net/<file_name>`。
   - 如果使用 HTTPS 协议进行访问，请使用 `abfss://` 作为前缀，例如，`abfss://<container>@<storage_account>.dfs.core.windows.net/<file_name>`。
 
-另外注意，下述命令以 CSV 格式、Azure Blob Storage 和基于 Shared Key 的认证方式为例。有关如何导入其他格式的数据、以及使用其他 Azure 对象存储服务和其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+另外注意，下述命令以 CSV 格式、Azure Blob Storage 和基于 Shared Key 的认证方式为例。有关如何导入其他格式的数据、以及使用其他 Azure 对象存储服务和其他认证方式时需要配置的参数，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -461,7 +463,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -505,7 +507,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -558,7 +560,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -592,7 +594,7 @@ PROPERTIES
 
 ## 从阿里云 OSS 导入
 
-下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -624,7 +626,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -669,7 +671,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -723,7 +725,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -757,7 +759,7 @@ PROPERTIES
 
 ## 从腾讯云 COS 导入
 
-下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -789,7 +791,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -834,7 +836,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -888,7 +890,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -922,7 +924,7 @@ PROPERTIES
 
 ## 从华为云 OBS 导入
 
-下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+下述命令以 CSV 格式为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -954,7 +956,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -999,7 +1001,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -1053,7 +1055,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -1087,7 +1089,7 @@ PROPERTIES
 
 ## 从其他兼容 S3 协议的对象存储导入
 
-下述命令以 CSV 格式和 MinIO 存储为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md)。
+下述命令以 CSV 格式和 MinIO 存储为例。有关如何导入其他格式的数据，参见 [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)。
 
 ### 导入单个数据文件到单表
 
@@ -1098,7 +1100,7 @@ PROPERTIES
 ```SQL
 LOAD LABEL test_db.label_brokerloadtest_701
 (
-    DATA INFILE("obs://bucket_minio/input/file1.csv")
+    DATA INFILE("s3://bucket_minio/input/file1.csv")
     INTO TABLE table1
     COLUMNS TERMINATED BY ","
     (id, name, score)
@@ -1121,7 +1123,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -1145,7 +1147,7 @@ SELECT * FROM table1;
 ```SQL
 LOAD LABEL test_db.label_brokerloadtest_702
 (
-    DATA INFILE("obs://bucket_minio/input/*")
+    DATA INFILE("s3://bucket_minio/input/*")
     INTO TABLE table1
     COLUMNS TERMINATED BY ","
     (id, name, score)
@@ -1168,7 +1170,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 的数据，如下所示：
 
 ```SQL
 SELECT * FROM table1;
@@ -1196,12 +1198,12 @@ SELECT * FROM table1;
 ```SQL
 LOAD LABEL test_db.label_brokerloadtest_703
 (
-    DATA INFILE("obs://bucket_minio/input/file1.csv")
+    DATA INFILE("s3://bucket_minio/input/file1.csv")
     INTO TABLE table1
     COLUMNS TERMINATED BY ","
     (id, name, score)
     ,
-    DATA INFILE("obs://bucket_minio/input/file2.csv")
+    DATA INFILE("s3://bucket_minio/input/file2.csv")
     INTO TABLE table2
     COLUMNS TERMINATED BY ","
     (id, name, score)
@@ -1224,7 +1226,7 @@ PROPERTIES
 
 提交导入作业以后，您可以使用 `SELECT * FROM information_schema.loads` 来查看 Broker Load 作业的结果，该功能自 3.1 版本起支持，具体请参见本文“[查看导入作业](#查看导入作业)”小节。
 
-确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
+确认导入作业成功以后，您可以使用 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句来查询 `table1` 和 `table2` 中的数据：
 
 1. 查询 `table1` 的数据，如下所示：
 
@@ -1258,7 +1260,7 @@ PROPERTIES
 
 ## 查看导入作业
 
-通过 [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md) 语句从 `information_schema` 数据库中的 `loads` 表来查看 Broker Load 作业的结果。该功能自 3.1 版本起支持。
+通过 [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) 语句从 `information_schema` 数据库中的 `loads` 表来查看 Broker Load 作业的结果。该功能自 3.1 版本起支持。
 
 示例一：通过如下命令查看 `test_db` 数据库中导入作业的执行情况，同时指定查询结果根据作业创建时间 (`CREATE_TIME`) 按降序排列，并且最多显示两条结果数据：
 
@@ -1358,11 +1360,11 @@ WHERE database_name = 'test_db' and label = 'label_brokerload_unqualifiedtest_82
 REJECTED_RECORD_PATH: 172.26.95.92:/home/disk1/sr/be/storage/rejected_record/test_db/label_brokerload_unqualifiedtest_0728/6/404a20b1e4db4d27_8aa9af1e8d6d8bdc
 ```
 
-有关返回字段的说明，参见 [`information_schema.loads`](../reference/information_schema/loads.md)。
+有关返回字段的说明，参见 [`information_schema.loads`](../sql-reference/information_schema/loads.md)。
 
 ## 取消导入作业
 
-当导入作业状态不为 **CANCELLED** 或 **FINISHED** 时，可以通过 [CANCEL LOAD](../sql-reference/sql-statements/data-manipulation/CANCEL_LOAD.md) 语句来取消该导入作业。
+当导入作业状态不为 **CANCELLED** 或 **FINISHED** 时，可以通过 [CANCEL LOAD](../sql-reference/sql-statements/loading_unloading/CANCEL_LOAD.md) 语句来取消该导入作业。
 
 例如，可以通过以下语句，撤销 `test_db` 数据库中标签为 `label1` 的导入作业：
 
@@ -1380,17 +1382,11 @@ WHERE LABEL = "label1";
 
 - 如果声明多个 `data_desc` 参数对应导入同一张表的不同分区，则每个分区数据的导入会拆分成一个子任务。
 
-每个子任务还会拆分成一个或者多个实例，然后这些实例会均匀地被分配到 BE 上并行执行。实例的拆分由以下 [FE 配置](../administration/FE_configuration.md#配置-fe-动态参数)决定：
+每个子任务还会拆分成一个或者多个实例，然后这些实例会均匀地被分配到 BE（或 CN）上并行执行。实例的拆分由 FE 配置参数 [`min_bytes_per_broker_scanner`](../administration/management/FE_configuration.md) 和 BE（或 CN）节点数量决定，可以使用如下公式计算单个子任务的实例总数：
 
-- `min_bytes_per_broker_scanner`：单个实例处理的最小数据量，默认为 64 MB。
+单个子任务的实例总数 = min（单个子任务待导入数据量的总大小/`min_bytes_per_broker_scanner`, BE/CN 节点数量）
 
-- `load_parallel_instance_num`：单个 BE 上每个作业允许的并发实例数，默认为 1 个。自 3.1 版本起弃用。
-
-   可以使用如下公式计算单个子任务的实例总数：
-
-   单个子任务的实例总数 = min（单个子任务待导入数据量的总大小/`min_bytes_per_broker_scanner`，`load_parallel_instance_num` x BE 总数）
-
-一般情况下，一个导入作业只有一个 `data_desc`，只会拆分成一个子任务，子任务会拆分成与 BE 总数相等的实例。
+一般情况下，一个导入作业只有一个 `data_desc`，只会拆分成一个子任务，子任务会拆分成与 BE（或 CN）节点数量相等的实例。
 
 ## 常见问题
 

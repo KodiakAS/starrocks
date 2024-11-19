@@ -43,16 +43,19 @@ import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.StarRocksHttpException;
+import com.starrocks.common.util.NetUtils;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
 import com.starrocks.http.BaseResponse;
 import com.starrocks.http.IllegalArgException;
-import com.starrocks.meta.lock.LockType;
-import com.starrocks.meta.lock.Locker;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.privilege.AccessDeniedException;
 import com.starrocks.privilege.PrivilegeType;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.SessionVariable;
+import com.starrocks.rpc.ConfigurableSerDesFactory;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.StatementPlanner;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
@@ -147,16 +150,16 @@ public class TableQueryPlanAction extends RestBaseAction {
             // check privilege for select, otherwise return HTTP 401
             Authorizer.checkTableAction(ConnectContext.get().getCurrentUserIdentity(), ConnectContext.get().getCurrentRoleIds(),
                     dbName, tableName, PrivilegeType.SELECT);
-            Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
             if (db == null) {
                 throw new StarRocksHttpException(HttpResponseStatus.NOT_FOUND,
                         "Database [" + dbName + "] " + "does not exists");
             }
             // may be should acquire writeLock
             Locker locker = new Locker();
-            locker.lockDatabase(db, LockType.READ);
+            locker.lockDatabase(db.getId(), LockType.READ);
             try {
-                Table table = db.getTable(tableName);
+                Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), tableName);
                 if (table == null) {
                     throw new StarRocksHttpException(HttpResponseStatus.NOT_FOUND,
                             "Table [" + tableName + "] " + "does not exists");
@@ -170,7 +173,7 @@ public class TableQueryPlanAction extends RestBaseAction {
                 // parse/analysis/plan the sql and acquire tablet distributions
                 handleQuery(ConnectContext.get(), db.getFullName(), tableName, sql, resultMap);
             } finally {
-                locker.unLockDatabase(db, LockType.READ);
+                locker.unLockDatabase(db.getId(), LockType.READ);
             }
         } catch (StarRocksHttpException e) {
             // status code  should conforms to HTTP semantic
@@ -211,10 +214,13 @@ public class TableQueryPlanAction extends RestBaseAction {
              * currently only used in Spark/Flink Connector
              */
             context.getSessionVariable().setSingleNodeExecPlan(true);
+            long limit = context.getSessionVariable().getSqlSelectLimit();
+            context.getSessionVariable().setSqlSelectLimit(SessionVariable.DEFAULT_SELECT_LIMIT);
             statementBase =
                     com.starrocks.sql.parser.SqlParser.parse(sql, context.getSessionVariable()).get(0);
-            execPlan = new StatementPlanner().plan(statementBase, context);
+            execPlan = StatementPlanner.plan(statementBase, context);
             context.getSessionVariable().setSingleNodeExecPlan(false);
+            context.getSessionVariable().setSqlSelectLimit(limit);
         } catch (Exception e) {
             LOG.error("error occurred when optimizing queryId: {}", context.getQueryId(), e);
             throw new StarRocksHttpException(HttpResponseStatus.INTERNAL_SERVER_ERROR,
@@ -312,9 +318,9 @@ public class TableQueryPlanAction extends RestBaseAction {
         tQueryPlanInfo.tablet_info = tabletInfo;
 
         // serialize TQueryPlanInfo and encode plan with Base64 to string in order to translate by json format
-        TSerializer serializer = new TSerializer();
         String opaquedQueryPlan;
         try {
+            TSerializer serializer = ConfigurableSerDesFactory.getTSerializer();
             byte[] queryPlanStream = serializer.serialize(tQueryPlanInfo);
             opaquedQueryPlan = Base64.getEncoder().encodeToString(queryPlanStream);
         } catch (TException e) {
@@ -339,7 +345,7 @@ public class TableQueryPlanAction extends RestBaseAction {
             TInternalScanRange scanRange = scanRangeLocations.scan_range.internal_scan_range;
             Node tabletRouting = new Node(Long.parseLong(scanRange.version), Integer.parseInt(scanRange.schema_hash));
             for (TNetworkAddress address : scanRange.hosts) {
-                tabletRouting.addRouting(address.hostname + ":" + address.port);
+                tabletRouting.addRouting(NetUtils.getHostPortInAccessibleFormat(address.hostname, address.port));
             }
             result.put(String.valueOf(scanRange.tablet_id), tabletRouting);
         }

@@ -105,6 +105,16 @@ public:
                                   const PTabletWriterAddChunksRequest* request, PTabletWriterAddBatchResult* response,
                                   google::protobuf::Closure* done) override;
 
+    void tablet_writer_add_chunk_via_http(google::protobuf::RpcController* controller,
+                                          const ::starrocks::PHttpRequest* request,
+                                          PTabletWriterAddBatchResult* response,
+                                          google::protobuf::Closure* done) override;
+
+    void tablet_writer_add_chunks_via_http(google::protobuf::RpcController* controller,
+                                           const ::starrocks::PHttpRequest* request,
+                                           PTabletWriterAddBatchResult* response,
+                                           google::protobuf::Closure* done) override;
+
     void tablet_writer_add_segment(google::protobuf::RpcController* controller,
                                    const PTabletWriterAddSegmentRequest* request,
                                    PTabletWriterAddSegmentResult* response, google::protobuf::Closure* done) override;
@@ -169,6 +179,12 @@ public:
     void process_dictionary_cache(google::protobuf::RpcController* controller,
                                   const PProcessDictionaryCacheRequest* request,
                                   PProcessDictionaryCacheResult* response, google::protobuf::Closure* done) override;
+
+    void fetch_arrow_schema(google::protobuf::RpcController* controller, const PFetchArrowSchemaRequest* request,
+                            PFetchArrowSchemaResult* result, google::protobuf::Closure* done);
+
+    void stream_load(google::protobuf::RpcController* controller, const PStreamLoadRequest* request,
+                     PStreamLoadResponse* response, google::protobuf::Closure* done) override;
 
 private:
     void _transmit_chunk(::google::protobuf::RpcController* controller,

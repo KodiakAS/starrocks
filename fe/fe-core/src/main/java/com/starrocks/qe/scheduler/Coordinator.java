@@ -16,7 +16,9 @@ package com.starrocks.qe.scheduler;
 
 import com.starrocks.analysis.DescriptorTable;
 import com.starrocks.common.Status;
+import com.starrocks.common.UserException;
 import com.starrocks.common.util.RuntimeProfile;
+import com.starrocks.datacache.DataCacheSelectMetrics;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.ScanNode;
 import com.starrocks.planner.StreamLoadPlanner;
@@ -25,6 +27,7 @@ import com.starrocks.proto.PQueryStatistics;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryStatisticsItem;
 import com.starrocks.qe.RowBatch;
+import com.starrocks.qe.scheduler.slot.DeployState;
 import com.starrocks.qe.scheduler.slot.LogicalSlot;
 import com.starrocks.sql.LoadPlanner;
 import com.starrocks.sql.plan.ExecPlan;
@@ -37,7 +40,10 @@ import com.starrocks.thrift.TSinkCommitInfo;
 import com.starrocks.thrift.TTabletCommitInfo;
 import com.starrocks.thrift.TTabletFailInfo;
 import com.starrocks.thrift.TUniqueId;
+import com.starrocks.transaction.TabletCommitInfo;
+import com.starrocks.transaction.TabletFailInfo;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -65,17 +71,19 @@ public abstract class Coordinator {
                                                          List<PlanFragment> fragments,
                                                          List<ScanNode> scanNodes, String timezone, long startTime,
                                                          Map<String, String> sessionVariables,
-                                                         ConnectContext context, long execMemLimit);
+                                                         ConnectContext context, long execMemLimit,
+                                                         long warehouseId);
 
         Coordinator createBrokerExportScheduler(Long jobId, TUniqueId queryId, DescriptorTable descTable,
                                                 List<PlanFragment> fragments,
                                                 List<ScanNode> scanNodes, String timezone, long startTime,
                                                 Map<String, String> sessionVariables,
-                                                long execMemLimit);
+                                                long execMemLimit,
+                                                long warehouseId);
 
         Coordinator createRefreshDictionaryCacheScheduler(ConnectContext context, TUniqueId queryId,
-                                                DescriptorTable descTable, List<PlanFragment> fragments,
-                                                List<ScanNode> scanNodes);
+                                                          DescriptorTable descTable, List<PlanFragment> fragments,
+                                                          List<ScanNode> scanNodes);
     }
 
     // ------------------------------------------------------------------------------------
@@ -99,6 +107,10 @@ public abstract class Coordinator {
      */
     public abstract void startScheduling(boolean needDeploy) throws Exception;
 
+    public Status scheduleNextTurn(TUniqueId fragmentInstanceId) {
+        return Status.OK;
+    }
+
     public void startScheduling() throws Exception {
         startScheduling(true);
     }
@@ -118,6 +130,11 @@ public abstract class Coordinator {
     }
 
     public abstract void cancel(PPlanFragmentCancelReason reason, String message);
+
+    public List<DeployState> assignIncrementalScanRangesToDeployStates(Deployer deployer, List<DeployState> deployStates)
+            throws UserException {
+        return List.of();
+    }
 
     public abstract void onFinished();
 
@@ -175,7 +192,15 @@ public abstract class Coordinator {
 
     public abstract List<TTabletFailInfo> getFailInfos();
 
+    public static List<TabletFailInfo> getFailInfos(Coordinator coord) {
+        return coord == null ? Collections.emptyList() : TabletFailInfo.fromThrift(coord.getFailInfos());
+    }
+
     public abstract List<TTabletCommitInfo> getCommitInfos();
+
+    public static List<TabletCommitInfo> getCommitInfos(Coordinator coord) {
+        return coord == null ? Collections.emptyList() : TabletCommitInfo.fromThrift(coord.getCommitInfos());
+    }
 
     public abstract List<TSinkCommitInfo> getSinkCommitInfos();
 
@@ -186,6 +211,8 @@ public abstract class Coordinator {
     public abstract List<String> getRejectedRecordPaths();
 
     public abstract List<QueryStatisticsItem.FragmentInstanceInfo> getFragmentInstanceInfos();
+
+    public abstract DataCacheSelectMetrics getDataCacheSelectMetrics();
 
     // ------------------------------------------------------------------------------------
     // Methods for audit.
@@ -214,4 +241,9 @@ public abstract class Coordinator {
 
     public abstract boolean isProfileAlreadyReported();
 
+    public abstract String getWarehouseName();
+
+    public abstract String getResourceGroupName();
+
+    public abstract boolean isShortCircuit();
 }

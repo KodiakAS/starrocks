@@ -1,19 +1,23 @@
 ---
-displayed_sidebar: "English"
-toc_max_heading_level: 3
+displayed_sidebar: docs
+toc_max_heading_level: 5
+keywords: ['iceberg']
 ---
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
+import QSTip from '../../_assets/commonMarkdown/quickstart-iceberg-tip.mdx'
 
 # Iceberg catalog
+
+<QSTip />
 
 An Iceberg catalog is a type of external catalog that is supported by StarRocks from v2.4 onwards. With Iceberg catalogs, you can:
 
 - Directly query data stored in Iceberg without the need to manually create tables.
-- Use [INSERT INTO](../../sql-reference/sql-statements/data-manipulation/INSERT.md) or asynchronous materialized views (which are supported from v2.5 onwards) to process data stored in Iceberg and load the data into StarRocks.
-- Perform operations on StarRocks to create or drop Iceberg databases and tables, or sink data from StarRocks tables to Parquet-formatted Iceberg tables by using [INSERT INTO](../../sql-reference/sql-statements/data-manipulation/INSERT.md) (this feature is supported from v3.1 onwards).
+- Use [INSERT INTO](../../sql-reference/sql-statements/loading_unloading/INSERT.md) or asynchronous materialized views (which are supported from v2.5 onwards) to process data stored in Iceberg and load the data into StarRocks.
+- Perform operations on StarRocks to create or drop Iceberg databases and tables, or sink data from StarRocks tables to Parquet-formatted Iceberg tables by using [INSERT INTO](../../sql-reference/sql-statements/loading_unloading/INSERT.md) (this feature is supported from v3.1 onwards).
 
-To ensure successful SQL workloads on your Iceberg cluster, your StarRocks cluster needs to integrate with two important components:
+To ensure successful SQL workloads on your Iceberg cluster, your StarRocks cluster must be able to access the storage system and metastore of your Iceberg cluster. StarRocks supports the following storage systems and metastores:
 
 - Distributed file system (HDFS) or object storage like AWS S3, Microsoft Azure Storage, Google GCS, or other S3-compatible storage system (for example, MinIO)
 
@@ -28,13 +32,12 @@ To ensure successful SQL workloads on your Iceberg cluster, your StarRocks clust
 
 ## Usage notes
 
-- The file formats of Iceberg that StarRocks supports are Parquet and ORC:
+Take note of the following points when you use StarRocks to query data from Iceberg:
 
-  - Parquet files support the following compression formats: SNAPPY, LZ4, ZSTD, GZIP, and NO_COMPRESSION.
-  - ORC files support the following compression formats: ZLIB, SNAPPY, LZO, LZ4, ZSTD, and NO_COMPRESSION.
-
-- Iceberg catalogs support v1 tables, and support ORC-formatted v2 tables from StarRocks v3.0 onwards.
-- Iceberg catalogs support v1 tables. Additionally, Iceberg catalogs support ORC-formatted v2 tables from StarRocks v3.0 onwards and support Parquet-formatted v2 tables from StarRocks v3.1 onwards.
+| **File format** | **Compression format**                                   | **Iceberg table version**                                           |
+| --------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| Parquet         | SNAPPY, LZ4, ZSTD, GZIP, and NO_COMPRESSION      | <ul><li>v1 tables: supported. </li><li>v2 tables: supported from StarRocks v3.1 onwards in which queries on these v2 tables support position deletes. In v3.1.10, v3.2.5, v3.3 and their later versions, queries on v2 tables also support equality deletes. </li></ul> |
+| ORC             | ZLIB, SNAPPY, LZO, LZ4, ZSTD, and NO_COMPRESSION | <ul><li>v1 tables: supported. </li><li>v2 tables: supported from StarRocks v3.0 onwards in which queries on these v2 tables support position deletes. In v3.1.8, v3.2.3, v3.3 and their later versions, queries on v2 tables also support equality deletes. </li></ul> |
 
 ## Integration preparation
 
@@ -67,11 +70,11 @@ For more information, see [Preparation for authentication in AWS IAM](../../inte
 
 If you choose HDFS as storage, configure your StarRocks cluster as follows:
 
-- (Optional) Set the username that is used to access your HDFS cluster and Hive metastore. By default, StarRocks uses the username of the FE and BE processes to access your HDFS cluster and Hive metastore. You can also set the username by adding `export HADOOP_USER_NAME="<user_name>"` at the beginning of the **fe/conf/hadoop_env.sh** file of each FE and at the beginning of the **be/conf/hadoop_env.sh** file of each BE. After you set the username in these files, restart each FE and each BE to make the parameter settings take effect. You can set only one username for each StarRocks cluster.
-- When you query Iceberg data, the FEs and BEs of your StarRocks cluster use the HDFS client to access your HDFS cluster. In most cases, you do not need to configure your StarRocks cluster to achieve that purpose, and StarRocks starts the HDFS client using the default configurations. You need to configure your StarRocks cluster only in the following situations:
+- (Optional) Set the username that is used to access your HDFS cluster and Hive metastore. By default, StarRocks uses the username of the FE and BE or CN processes to access your HDFS cluster and Hive metastore. You can also set the username by adding `export HADOOP_USER_NAME="<user_name>"` at the beginning of the **fe/conf/hadoop_env.sh** file of each FE and at the beginning of the **be/conf/hadoop_env.sh** file of each BE or the **cn/conf/hadoop_env.sh** file of each CN. After you set the username in these files, restart each FE and each BE or CN to make the parameter settings take effect. You can set only one username for each StarRocks cluster.
+- When you query Iceberg data, the FEs and BEs or CNs of your StarRocks cluster use the HDFS client to access your HDFS cluster. In most cases, you do not need to configure your StarRocks cluster to achieve that purpose, and StarRocks starts the HDFS client using the default configurations. You need to configure your StarRocks cluster only in the following situations:
 
-  - High availability (HA) is enabled for your HDFS cluster: Add the **hdfs-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE.
-  - View File System (ViewFs) is enabled for your HDFS cluster: Add the **core-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE.
+  - High availability (HA) is enabled for your HDFS cluster: Add the **hdfs-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE or the **$CN_HOME/conf** path of each CN.
+  - View File System (ViewFs) is enabled for your HDFS cluster: Add the **core-site.xml** file of your HDFS cluster to the **$FE_HOME/conf** path of each FE and to the **$BE_HOME/conf** path of each BE or the **$CN_HOME/conf** path of each CN.
 
 :::tip
 
@@ -85,8 +88,8 @@ If an error indicating an unknown host is returned when you send a query, you mu
 
 If Kerberos authentication is enabled for your HDFS cluster or Hive metastore, configure your StarRocks cluster as follows:
 
-- Run the `kinit -kt keytab_path principal` command on each FE and each BE to obtain Ticket Granting Ticket (TGT) from Key Distribution Center (KDC). To run this command, you must have the permissions to access your HDFS cluster and Hive metastore. Note that accessing KDC with this command is time-sensitive. Therefore, you need to use cron to run this command periodically.
-- Add `JAVA_OPTS="-Djava.security.krb5.conf=/etc/krb5.conf"` to the **$FE_HOME/conf/fe.conf** file of each FE and to the **$BE_HOME/conf/be.conf** file of each BE. In this example, `/etc/krb5.conf` is the save path of the **krb5.conf** file. You can modify the path based on your needs.
+- Run the `kinit -kt keytab_path principal` command on each FE and each BE or CN to obtain Ticket Granting Ticket (TGT) from Key Distribution Center (KDC). To run this command, you must have the permissions to access your HDFS cluster and Hive metastore. Note that accessing KDC with this command is time-sensitive. Therefore, you need to use cron to run this command periodically.
+- Add `JAVA_OPTS="-Djava.security.krb5.conf=/etc/krb5.conf"` to the **$FE_HOME/conf/fe.conf** file of each FE and to the **$BE_HOME/conf/be.conf** file of each BE or the **$CN_HOME/conf/cn.conf** file of each CN. In this example, `/etc/krb5.conf` is the save path of the **krb5.conf** file. You can modify the path based on your needs.
 
 </TabItem>
 
@@ -105,7 +108,8 @@ PROPERTIES
 (
     "type" = "iceberg",
     MetastoreParams,
-    StorageCredentialParams
+    StorageCredentialParams,
+    MetadataUpdateParams
 )
 ```
 
@@ -206,17 +210,17 @@ Description: The type of metastore that you use for your Iceberg cluster. Set th
 ###### aws.glue.use_instance_profile
 
 Required: Yes
-Description: Specifies whether to enable the instance profile-based authentication method and the assumed role-based authentication method. Valid values: `true` and `false`. Default value: `false`. 
+Description: Specifies whether to enable the instance profile-based authentication method and the assumed role-based authentication method. Valid values: `true` and `false`. Default value: `false`.
 
 ###### aws.glue.iam_role_arn
 
 Required: No
-Description: The ARN of the IAM role that has privileges on your AWS Glue Data Catalog. If you use the assumed role-based authentication method to access AWS Glue, you must specify this parameter. 
+Description: The ARN of the IAM role that has privileges on your AWS Glue Data Catalog. If you use the assumed role-based authentication method to access AWS Glue, you must specify this parameter.
 
 ###### aws.glue.region
 
 Required: Yes
-Description: The region in which your AWS Glue Data Catalog resides. Example: `us-west-1`. 
+Description: The region in which your AWS Glue Data Catalog resides. Example: `us-west-1`.
 
 ###### aws.glue.access_key
 
@@ -338,12 +342,12 @@ Description:  Specifies whether to enable the instance profile-based authenticat
 ###### aws.s3.iam_role_arn
 
 Required: No
-Description: The ARN of the IAM role that has privileges on your AWS S3 bucket. If you use the assumed role-based authentication method to access AWS S3, you must specify this parameter. 
+Description: The ARN of the IAM role that has privileges on your AWS S3 bucket. If you use the assumed role-based authentication method to access AWS S3, you must specify this parameter.
 
 ###### aws.s3.region
 
 Required: Yes
-Description:  The region in which your AWS S3 bucket resides. Example: `us-west-1`. 
+Description:  The region in which your AWS S3 bucket resides. Example: `us-west-1`.
 
 ###### aws.s3.access_key
 
@@ -586,6 +590,19 @@ Description: The service account that you want to impersonate.
 </Tabs>
 
 ---
+
+#### MetadataUpdateParams
+
+A set of parameters about how StarRocks update the cache of the Iceberg metadata. This parameter set is optional.
+
+From v3.3.3 onwards, StarRocks supports the [periodic metadata refresh strategy](#appendix-periodic-metadata-refresh-strategy). In most cases, you can ignore `MetadataUpdateParams` and do not need to tune the policy parameters in it, because the default values of these parameters already provide you with an out-of-the-box performance. You can adjust the Iceberg metadata caching plan using the system variable [`plan_mode`](../../sql-reference/System_variable.md#plan_mode).
+
+| **Parameter**                                 | **Default**           | **Description**                                              |
+| :-------------------------------------------- | :-------------------- | :----------------------------------------------------------- |
+| enable_iceberg_metadata_cache                 | true                  | Whether to cache Iceberg-related metadata, including Table Cache, Partition Name Cache, and the Data File Cache and Delete Data File Cache in Manifest. |
+| iceberg_manifest_cache_with_column_statistics | false                 | Whether to cache the statistics of columns.                  |
+| iceberg_manifest_cache_max_num                | 100000                | The maximum number of Manifest files that can be cached.     |
+| refresh_iceberg_manifest_min_length           | 2 * 1024 * 1024       | The minimum Manifest file length that triggers a Data File Cache refresh. |
 
 ### Examples
 
@@ -921,17 +938,17 @@ PROPERTIES
  
  ---
 
-## Using your catalog
+## Use your catalog
 
 ### View Iceberg catalogs
 
-You can use [SHOW CATALOGS](../../sql-reference/sql-statements/data-manipulation/SHOW_CATALOGS.md) to query all catalogs in the current StarRocks cluster:
+You can use [SHOW CATALOGS](../../sql-reference/sql-statements/Catalog/SHOW_CATALOGS.md) to query all catalogs in the current StarRocks cluster:
 
 ```SQL
 SHOW CATALOGS;
 ```
 
-You can also use [SHOW CREATE CATALOG](../../sql-reference/sql-statements/data-manipulation/SHOW_CREATE_CATALOG.md) to query the creation statement of an external catalog. The following example queries the creation statement of an Iceberg catalog named `iceberg_catalog_glue`:
+You can also use [SHOW CREATE CATALOG](../../sql-reference/sql-statements/Catalog/SHOW_CREATE_CATALOG.md) to query the creation statement of an external catalog. The following example queries the creation statement of an Iceberg catalog named `iceberg_catalog_glue`:
 
 ```SQL
 SHOW CREATE CATALOG iceberg_catalog_glue;
@@ -943,7 +960,7 @@ SHOW CREATE CATALOG iceberg_catalog_glue;
 
 You can use one of the following methods to switch to an Iceberg catalog and a database in it:
 
-- Use [SET CATALOG](../../sql-reference/sql-statements/data-definition/SET_CATALOG.md) to specify an Iceberg catalog in the current session, and then use [USE](../../sql-reference/sql-statements/data-definition/USE.md) to specify an active database:
+- Use [SET CATALOG](../../sql-reference/sql-statements/Catalog/SET_CATALOG.md) to specify an Iceberg catalog in the current session, and then use [USE](../../sql-reference/sql-statements/Database/USE.md) to specify an active database:
 
   ```SQL
   -- Switch to a specified catalog in the current session:
@@ -952,7 +969,7 @@ You can use one of the following methods to switch to an Iceberg catalog and a d
   USE <db_name>
   ```
 
-- Directly use [USE](../../sql-reference/sql-statements/data-definition/USE.md) to switch to an Iceberg catalog and a database in it:
+- Directly use [USE](../../sql-reference/sql-statements/Database/USE.md) to switch to an Iceberg catalog and a database in it:
 
   ```SQL
   USE <catalog_name>.<db_name>
@@ -962,7 +979,7 @@ You can use one of the following methods to switch to an Iceberg catalog and a d
 
 ### Drop an Iceberg catalog
 
-You can use [DROP CATALOG](../../sql-reference/sql-statements/data-definition/DROP_CATALOG.md) to drop an external catalog.
+You can use [DROP CATALOG](../../sql-reference/sql-statements/Catalog/DROP_CATALOG.md) to drop an external catalog.
 
 The following example drops an Iceberg catalog named `iceberg_catalog_glue`:
 
@@ -992,7 +1009,7 @@ You can use one of the following syntaxes to view the schema of an Iceberg table
 
 ### Query an Iceberg table
 
-1. Use [SHOW DATABASES](../../sql-reference/sql-statements/data-manipulation/SHOW_DATABASES.md) to view the databases in your Iceberg cluster:
+1. Use [SHOW DATABASES](../../sql-reference/sql-statements/Database/SHOW_DATABASES.md) to view the databases in your Iceberg cluster:
 
    ```SQL
    SHOW DATABASES FROM <catalog_name>
@@ -1000,7 +1017,7 @@ You can use one of the following syntaxes to view the schema of an Iceberg table
 
 2. [Switch to an Iceberg catalog and a database in it](#switch-to-an-iceberg-catalog-and-a-database-in-it).
 
-3. Use [SELECT](../../sql-reference/sql-statements/data-manipulation/SELECT.md) to query the destination table in the specified database:
+3. Use [SELECT](../../sql-reference/sql-statements/table_bucket_part_index/SELECT.md) to query the destination table in the specified database:
 
    ```SQL
    SELECT count(*) FROM <table_name> LIMIT 10
@@ -1010,7 +1027,7 @@ You can use one of the following syntaxes to view the schema of an Iceberg table
 
 ### Create an Iceberg database
 
-Similar to the internal catalog of StarRocks, if you have the [CREATE DATABASE](../../administration/privilege_item.md#catalog) privilege on an Iceberg catalog, you can use the [CREATE DATABASE](../../sql-reference/sql-statements/data-definition/CREATE_DATABASE.md) statement to create databases in that Iceberg catalog. This feature is supported from v3.1 onwards.
+Similar to the internal catalog of StarRocks, if you have the [CREATE DATABASE](../../administration/user_privs/privilege_item.md#catalog) privilege on an Iceberg catalog, you can use the [CREATE DATABASE](../../sql-reference/sql-statements/Database/CREATE_DATABASE.md) statement to create databases in that Iceberg catalog. This feature is supported from v3.1 onwards.
 
 :::tip
 
@@ -1063,7 +1080,7 @@ The `prefix` varies based on the storage system you use:
 
 ### Drop an Iceberg database
 
-Similar to the internal databases of StarRocks, if you have the [DROP](../../administration/privilege_item.md#database) privilege on an Iceberg database, you can use the [DROP DATABASE](../../sql-reference/sql-statements/data-definition/DROP_DATABASE.md) statement to drop that Iceberg database. This feature is supported from v3.1 onwards. You can only drop empty databases.
+Similar to the internal databases of StarRocks, if you have the [DROP](../../administration/user_privs/privilege_item.md#database) privilege on an Iceberg database, you can use the [DROP DATABASE](../../sql-reference/sql-statements/Database/DROP_DATABASE.md) statement to drop that Iceberg database. This feature is supported from v3.1 onwards. You can only drop empty databases.
 
 When you drop an Iceberg database, the database's file path on your HDFS cluster or cloud storage will not be dropped along with the database.
 
@@ -1077,7 +1094,7 @@ DROP DATABASE <database_name>;
 
 ### Create an Iceberg table
 
-Similar to the internal databases of StarRocks, if you have the [CREATE TABLE](../../administration/privilege_item.md#database) privilege on an Iceberg database, you can use the [CREATE TABLE](../../sql-reference/sql-statements/data-definition/CREATE_TABLE.md) or [CREATE TABLE AS SELECT (CTAS)](../../sql-reference/sql-statements/data-definition/CREATE_TABLE_AS_SELECT.md) statement to create a table in that Iceberg database. This feature is supported from v3.1 onwards.
+Similar to the internal databases of StarRocks, if you have the [CREATE TABLE](../../administration/user_privs/privilege_item.md#database) privilege on an Iceberg database, you can use the [CREATE TABLE](../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE.md) or [CREATE TABLE AS SELECT ../../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE_AS_SELECT.mdELECT.md) statement to create a table in that Iceberg database. This feature is supported from v3.1 onwards.
 
 [Switch to an Iceberg catalog and a database in it](#switch-to-an-iceberg-catalog-and-a-database-in-it), and then use the following syntax to create an Iceberg table in that database.
 
@@ -1143,7 +1160,7 @@ Description: The file format of the Iceberg table. Only the Parquet format is su
 
 ###### compression_codec
 
-Description: The compression algorithm used for the Iceberg table. The supported compression algorithms are SNAPPY, GZIP, ZSTD, and LZ4. Default value: `gzip`.
+Description: The compression algorithm used for the Iceberg table. The supported compression algorithms are SNAPPY, GZIP, ZSTD, and LZ4. Default value: `gzip`. This property is deprecated in v3.2.3, since which version the compression algorithm used for sinking data to Iceberg tables is uniformly controlled by the session variable [connector_sink_compression_codec](../../sql-reference/System_variable.md#connector_sink_compression_codec).
 
 ---
 
@@ -1183,7 +1200,7 @@ Description: The compression algorithm used for the Iceberg table. The supported
 
 ### Sink data to an Iceberg table
 
-Similar to the internal tables of StarRocks, if you have the [INSERT](../../administration/privilege_item.md#table) privilege on an Iceberg table, you can use the [INSERT](../../sql-reference/sql-statements/data-manipulation/INSERT.md) statement to sink the data of a StarRocks table to that Iceberg table (currently only Parquet-formatted Iceberg tables are supported). This feature is supported from v3.1 onwards.
+Similar to the internal tables of StarRocks, if you have the [INSERT](../../administration/user_privs/privilege_item.md#table) privilege on an Iceberg table, you can use the [INSERT](../../sql-reference/sql-statements/loading_unloading/INSERT.md) statement to sink the data of a StarRocks table to that Iceberg table (currently only Parquet-formatted Iceberg tables are supported). This feature is supported from v3.1 onwards.
 
 [Switch to an Iceberg catalog and a database in it](#switch-to-an-iceberg-catalog-and-a-database-in-it), and then use the following syntax to sink the data of StarRocks table to a Parquet-formatted Iceberg table in that database.
 
@@ -1290,7 +1307,7 @@ The partitions into which you want to load data. You must specify all partition 
 
 ### Drop an Iceberg table
 
-Similar to the internal tables of StarRocks, if you have the [DROP](../../administration/privilege_item.md#table) privilege on an Iceberg table, you can use the [DROP TABLE](../../sql-reference/sql-statements/data-definition/DROP_TABLE.md) statement to drop that Iceberg table. This feature is supported from v3.1 onwards.
+Similar to the internal tables of StarRocks, if you have the [DROP](../../administration/user_privs/privilege_item.md#table) privilege on an Iceberg table, you can use the [DROP TABLE](../../sql-reference/sql-statements/table_bucket_part_index/DROP_TABLE.md) statement to drop that Iceberg table. This feature is supported from v3.1 onwards.
 
 When you drop an Iceberg table, the table's file path and data on your HDFS cluster or cloud storage will not be dropped along with the table.
 
@@ -1313,46 +1330,82 @@ StarRocks uses the Least Recently Used (LRU) algorithm to cache and evict data. 
 - StarRocks first attempts to retrieve the requested metadata from the memory. If the metadata cannot be hit in the memory, StarRock attempts to retrieve the metadata from the disks. The metadata that StarRocks has retrieved from the disks will be loaded into the memory. If the metadata cannot be hit in the disks either, StarRock retrieves the metadata from the remote storage and caches the retrieved metadata in the memory.
 - StarRocks writes the metadata evicted out of the memory into the disks, but it directly discards the metadata evicted out of the disks.
 
-#### Iceberg metadata caching parameters
+From v3.3.3 onwards, StarRocks supports the [periodic metadata refresh strategy](#appendix-periodic-metadata-refresh-strategy). You can adjust the Iceberg metadata caching plan using the system variable [`plan_mode`](../../sql-reference/System_variable.md#plan_mode).
+
+#### FE Configurations on Iceberg metadata caching
 
 ##### enable_iceberg_metadata_disk_cache
 
-Unit: N/A
-Default value: `false`
-Description: Specifies whether to enable the disk cache.
+- Unit: N/A
+- Default value: `false`
+- Description: Specifies whether to enable the disk cache.
 
 ##### iceberg_metadata_cache_disk_path
 
-Unit: N/A
-Default value: `StarRocksFE.STARROCKS_HOME_DIR + "/caches/iceberg"`
-Description: The save path of cached metadata files on disk.
+- Unit: N/A
+- Default value: `StarRocksFE.STARROCKS_HOME_DIR + "/caches/iceberg"`
+- Description: The save path of cached metadata files on disk.
 
 ##### iceberg_metadata_disk_cache_capacity
 
-Unit: Bytes
-Default value: `2147483648`, equivalent to 2 GB
-Description: The maximum size of cached metadata allowed on disk.
+- Unit: Bytes
+- Default value: `2147483648`, equivalent to 2 GB
+- Description: The maximum size of cached metadata allowed on disk.
 
 ##### iceberg_metadata_memory_cache_capacity
 
-Unit: Bytes
-Default value: `536870912`, equivalent to 512 MB
-Description: The maximum size of cached metadata allowed in memory.
+- Unit: Bytes
+- Default value: `536870912`, equivalent to 512 MB
+- Description: The maximum size of cached metadata allowed in memory.
 
 ##### iceberg_metadata_memory_cache_expiration_seconds
 
-Unit: Seconds  
-Default value: `86500`
-Description: The amount of time after which a cache entry in memory expires counting from its last access.
+- Unit: Seconds  
+- Default value: `86500`
+- Description: The amount of time after which a cache entry in memory expires counting from its last access.
 
 ##### iceberg_metadata_disk_cache_expiration_seconds
 
-Unit: Seconds  
-Default value: `604800`, equivalent to one week
-Description: The amount of time after which a cache entry on disk expires counting from its last access.
+- Unit: Seconds  
+- Default value: `604800`, equivalent to one week
+- Description: The amount of time after which a cache entry on disk expires counting from its last access.
 
 ##### iceberg_metadata_cache_max_entry_size
 
-Unit: Bytes
-Default value: `8388608`, equivalent to 8 MB
-Description: The maximum size of a file that can be cached. Files whose size exceeds the value of this parameter cannot be cached. If a query requests these files, StarRocks retrieves them from the remote storage.
+- Unit: Bytes
+- Default value: `8388608`, equivalent to 8 MB
+- Description: The maximum size of a file that can be cached. Files whose size exceeds the value of this parameter cannot be cached. If a query requests these files, StarRocks retrieves them from the remote storage.
+
+##### enable_background_refresh_connector_metadata
+
+- Unit: -
+- Default value: true
+- Description: Whether to enable the periodic Iceberg metadata cache refresh. After it is enabled, StarRocks polls the metastore (Hive Metastore or AWS Glue) of your Iceberg cluster, and refreshes the cached metadata of the frequently accessed Iceberg catalogs to perceive data changes. `true` indicates to enable the Iceberg metadata cache refresh, and `false` indicates to disable it.
+
+##### background_refresh_metadata_interval_millis
+
+- Unit: Millisecond
+- Default value: 600000
+- Description: The interval between two consecutive Iceberg metadata cache refreshes. - Unit: millisecond.
+
+##### background_refresh_metadata_time_secs_since_last_access_sec
+
+- Unit: Second
+- Default value: 86400
+- Description: The expiration time of an Iceberg metadata cache refresh task. For the Iceberg catalog that has been accessed, if it has not been accessed for more than the specified time, StarRocks stops refreshing its cached metadata. For the Iceberg catalog that has not been accessed, StarRocks will not refresh its cached metadata.
+
+## Appendix: Periodic Metadata Refresh Strategy
+
+- **Distributed Plan for Large volume of Metadata**
+
+  To handle large volume of metadata effectively, StarRocks employs a distributed approach using multiple BE and CN nodes. This method leverages the parallel computing capabilities of modern query engines, which can distribute tasks such as reading, decompressing, and filtering manifest files across multiple nodes. By processing these manifest files in parallel, the time required for metadata retrieval is significantly reduced, leading to faster job planning. This is particularly beneficial for large queries involving numerous manifest files, as it eliminates single-point bottlenecks and enhances overall query execution efficiency.
+
+- **Local Plan for Small volume of Metadata**
+
+  For smaller queries, where the repeated decompression and parsing of manifest files can introduce unnecessary delays, a different strategy is employed. StarRocks caches deserialized memory objects, especially Avro files, to address this issue. By storing these deserialized files in memory, the system can bypass the decompression and parsing stages for subsequent queries. This caching mechanism allows direct access to the required metadata, significantly reducing retrieval times. As a result, the system becomes more responsive and better suited to meet high query demands and materialized view rewriting needs.
+
+- **Adaptive Metadata Retrieval Strategy** (Default)
+
+  StarRocks is designed to automatically select the appropriate metadata retrieval method based on various factors, including the number of FE and BE/CN nodes, their CPU core counts, and the number of manifest files required for the current query. This adaptive approach ensures that the system dynamically optimizes metadata retrieval without the need for manual adjustment of metadata-related parameters. By doing so, StarRocks provides a seamless experience, balancing between distributed and local plans to achieve optimal query performance under different conditions.
+
+You can adjust the Iceberg metadata caching plan using the system variable [`plan_mode`](../../sql-reference/System_variable.md#plan_mode).

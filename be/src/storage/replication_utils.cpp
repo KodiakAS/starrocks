@@ -44,6 +44,10 @@ static const uint32_t GET_LENGTH_TIMEOUT = 10;
 
 static Status list_remote_files(const std::string& remote_url_prefix, std::vector<string>* file_name_list,
                                 std::vector<int64_t>* file_size_list) {
+    if (StorageEngine::instance()->bg_worker_stopped()) {
+        return Status::InternalError("Process is going to quit. The list remote files will stop");
+    }
+
     // Get remote dir file list
     string file_list_str;
     auto list_files_cb = [&remote_url_prefix, &file_list_str](HttpClient* client) {
@@ -83,6 +87,10 @@ static Status list_remote_files(const std::string& remote_url_prefix, std::vecto
 }
 
 static StatusOr<uint64_t> get_remote_file_size(const std::string& remote_file_url) {
+    if (StorageEngine::instance()->bg_worker_stopped()) {
+        return Status::InternalError("Process is going to quit. The get remote file size will stop");
+    }
+
     uint64_t file_size = 0;
     auto get_file_size_cb = [&remote_file_url, &file_size](HttpClient* client) {
         RETURN_IF_ERROR(client->init(remote_file_url));
@@ -98,6 +106,10 @@ static StatusOr<uint64_t> get_remote_file_size(const std::string& remote_file_ur
 static Status download_remote_file(
         const std::string& remote_file_url, uint64_t timeout_sec,
         const std::function<StatusOr<std::unique_ptr<FileStreamConverter>>()>& converter_creator) {
+    if (StorageEngine::instance()->bg_worker_stopped()) {
+        return Status::InternalError("Process is going to quit. The download remote file will stop");
+    }
+
     auto download_cb = [&](HttpClient* client) {
         ASSIGN_OR_RETURN(auto converter, converter_creator());
         if (converter == nullptr) {
@@ -106,7 +118,10 @@ static Status download_remote_file(
 
         RETURN_IF_ERROR(client->init(remote_file_url));
         client->set_timeout_ms(timeout_sec * 1000);
-        RETURN_IF_ERROR(client->download([&](const void* data, size_t size) { return converter->append(data, size); }));
+        RETURN_IF_ERROR(client->download([&](const void* data, size_t size) { return converter->append(data, size); },
+                                         config::replication_min_speed_limit_kbps,
+                                         config::replication_min_speed_time_seconds,
+                                         config::replication_max_speed_limit_kbps));
         RETURN_IF_ERROR(converter->close());
         return Status::OK();
     };
@@ -119,6 +134,10 @@ Status ReplicationUtils::make_remote_snapshot(const std::string& host, int32_t b
                                               const std::vector<Version>* missed_versions,
                                               const std::vector<int64_t>* missing_version_ranges,
                                               std::string* remote_snapshot_path) {
+    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+        return Status::InternalError("Process is going to quit. The make remote snapshot will stop");
+    }
+
     TSnapshotRequest request;
     request.__set_tablet_id(tablet_id);
     request.__set_schema_hash(schema_hash);
@@ -184,6 +203,10 @@ Status ReplicationUtils::make_remote_snapshot(const std::string& host, int32_t b
 
 Status ReplicationUtils::release_remote_snapshot(const std::string& ip, int32_t port,
                                                  const std::string& src_snapshot_path) {
+    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+        return Status::InternalError("Process is going to quit. The release remote snapshot will stop");
+    }
+
     TAgentResult result;
 
 #ifdef BE_TEST
@@ -203,6 +226,10 @@ Status ReplicationUtils::download_remote_snapshot(
         const std::function<StatusOr<std::unique_ptr<FileStreamConverter>>(const std::string& file_name,
                                                                            uint64_t file_size)>& file_converters,
         DataDir* data_dir) {
+    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+        return Status::InternalError("Process is going to quit. The download remote snapshot will stop");
+    }
+
 #ifdef BE_TEST
     std::string test_file = "test_file";
     ASSIGN_OR_RETURN(auto file_converter, file_converters(test_file, 0));
@@ -233,6 +260,10 @@ Status ReplicationUtils::download_remote_snapshot(
     MonotonicStopWatch watch;
     watch.start();
     for (int i = 0; i < file_name_list.size(); ++i) {
+        if (StorageEngine::instance()->bg_worker_stopped()) {
+            return Status::InternalError("Process is going to quit. The download remote snapshot will stop");
+        }
+
         const std::string& remote_file_name = file_name_list[i];
         auto remote_file_url = remote_url_prefix + remote_file_name;
 
@@ -249,12 +280,13 @@ Status ReplicationUtils::download_remote_snapshot(
         }
 
         total_file_size += file_size;
-        uint64_t estimate_timeout_sec = file_size / config::download_low_speed_limit_kbps / 1024;
-        if (estimate_timeout_sec < config::download_low_speed_time) {
-            estimate_timeout_sec = config::download_low_speed_time;
+        int32_t min_speed_kbps = std::max(config::replication_min_speed_limit_kbps, 1);
+        uint64_t estimate_timeout_sec = file_size / min_speed_kbps / 1024;
+        if (estimate_timeout_sec < config::replication_min_speed_time_seconds) {
+            estimate_timeout_sec = config::replication_min_speed_time_seconds;
         }
 
-        VLOG(1) << "Downloading " << remote_file_url << ", bytes: " << file_size
+        VLOG(2) << "Downloading " << remote_file_url << ", bytes: " << file_size
                 << ", timeout: " << estimate_timeout_sec << "s";
 
         RETURN_IF_ERROR(download_remote_file(remote_file_url, estimate_timeout_sec,
@@ -278,6 +310,10 @@ StatusOr<std::string> ReplicationUtils::download_remote_snapshot_file(
         const std::string& host, int32_t http_port, const std::string& remote_token,
         const std::string& remote_snapshot_path, TTabletId remote_tablet_id, TSchemaHash remote_schema_hash,
         const std::string& file_name, uint64_t timeout_sec) {
+    if (UNLIKELY(StorageEngine::instance()->bg_worker_stopped())) {
+        return Status::InternalError("Process is going to quit. The download remote snapshot file will stop");
+    }
+
 #ifdef BE_TEST
     std::string path =
             strings::Substitute("$0/$1/$2/$3", remote_snapshot_path, remote_tablet_id, remote_schema_hash, file_name);
@@ -300,6 +336,23 @@ StatusOr<std::string> ReplicationUtils::download_remote_snapshot_file(
     RETURN_IF_ERROR(HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb));
     return file_content;
 #endif
+}
+
+Status ReplicationUtils::convert_rowset_txn_meta(RowsetTxnMetaPB* rowset_txn_meta,
+                                                 const std::unordered_map<uint32_t, uint32_t>& column_unique_id_map) {
+    RETURN_IF_ERROR(convert_column_unique_ids(rowset_txn_meta->mutable_partial_update_column_unique_ids(),
+                                              column_unique_id_map));
+
+    if (rowset_txn_meta->has_auto_increment_partial_update_column_uid()) {
+        auto iter = column_unique_id_map.find(rowset_txn_meta->auto_increment_partial_update_column_uid());
+        if (iter == column_unique_id_map.end()) {
+            LOG(ERROR) << "Column not found, column unique id: "
+                       << rowset_txn_meta->auto_increment_partial_update_column_uid();
+            return Status::InternalError("Column not found");
+        }
+        rowset_txn_meta->set_auto_increment_partial_update_column_uid(iter->second);
+    }
+    return Status::OK();
 }
 
 } // namespace starrocks

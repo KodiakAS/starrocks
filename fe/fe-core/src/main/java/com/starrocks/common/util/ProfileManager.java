@@ -35,9 +35,12 @@
 package com.starrocks.common.util;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.common.Config;
+import com.starrocks.common.Pair;
+import com.starrocks.memory.MemoryTrackable;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -50,6 +53,7 @@ import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
+import java.util.stream.Collectors;
 
 /*
  * if you want to visit the atrribute(such as queryID,defaultDb)
@@ -60,7 +64,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
  * the purpose is let coordinator can destruct earlier(the fragment profile is in Coordinator)
  *
  */
-public class ProfileManager {
+public class ProfileManager implements MemoryTrackable {
     private static final Logger LOG = LogManager.getLogger(ProfileManager.class);
     private static ProfileManager INSTANCE = null;
     public static final String QUERY_ID = "Query ID";
@@ -75,10 +79,17 @@ public class ProfileManager {
     public static final String DEFAULT_DB = "Default Db";
     public static final String VARIABLES = "Variables";
     public static final String PROFILE_COLLECT_TIME = "Collect Profile Time";
+    public static final String LOAD_TYPE = "Load Type";
+
+    public static final String LOAD_TYPE_STREAM_LOAD = "STREAM_LOAD";
+    public static final String LOAD_TYPE_ROUTINE_LOAD = "ROUTINE_LOAD";
+
+    private static final int MEMORY_PROFILE_SAMPLES = 10;
 
     public static final ArrayList<String> PROFILE_HEADERS = new ArrayList<>(
             Arrays.asList(QUERY_ID, USER, DEFAULT_DB, SQL_STATEMENT, QUERY_TYPE,
                     START_TIME, END_TIME, TOTAL_TIME, QUERY_STATE));
+
 
     public static class ProfileElement {
         public Map<String, String> infoStrings = Maps.newHashMap();
@@ -161,6 +172,7 @@ public class ProfileManager {
         ProfileElement element = createElement(profile.getChildList().get(0).first, profileString);
         element.plan = plan;
         String queryId = element.infoStrings.get(ProfileManager.QUERY_ID);
+        String queryType = element.infoStrings.get(ProfileManager.QUERY_TYPE);
         // check when push in, which can ensure every element in the list has QUERY_ID column,
         // so there is no need to check when remove element from list.
         if (Strings.isNullOrEmpty(queryId)) {
@@ -170,9 +182,16 @@ public class ProfileManager {
 
         writeLock.lock();
         try {
-            profileMap.put(queryId, element);
-            if (profileMap.size() >= Config.profile_info_reserved_num) {
-                profileMap.remove(profileMap.keySet().iterator().next());
+            if (queryType != null && queryType.equals("Load")) {
+                loadProfileMap.put(queryId, element);
+                if (loadProfileMap.size() > Config.load_profile_info_reserved_num) {
+                    loadProfileMap.remove(loadProfileMap.keySet().iterator().next());
+                }
+            } else {
+                profileMap.put(queryId, element);
+                if (profileMap.size() > Config.profile_info_reserved_num) {
+                    profileMap.remove(profileMap.keySet().iterator().next());
+                }
             }
         } finally {
             writeLock.unlock();
@@ -181,26 +200,12 @@ public class ProfileManager {
         return profileString;
     }
 
-    public void pushLoadProfile(RuntimeProfile profile) {
-        String profileString = generateProfileString(profile);
-
-        ProfileElement element = createElement(profile.getChildList().get(0).first, profileString);
-        String loadId = element.infoStrings.get(ProfileManager.QUERY_ID);
-        // check when push in, which can ensure every element in the list has QUERY_ID column,
-        // so there is no need to check when remove element from list.
-        if (Strings.isNullOrEmpty(loadId)) {
-            LOG.warn("the key or value of Map is null, "
-                    + "may be forget to insert 'QUERY_ID' column into infoStrings");
-        }
-
-        writeLock.lock();
+    public boolean hasProfile(String queryId) {
+        readLock.lock();
         try {
-            loadProfileMap.put(loadId, element);
-            if (loadProfileMap.size() >= Config.load_profile_info_reserved_num) {
-                loadProfileMap.remove(loadProfileMap.keySet().iterator().next());
-            }
+            return profileMap.containsKey(queryId) || loadProfileMap.containsKey(queryId);
         } finally {
-            writeLock.unlock();
+            readLock.unlock();
         }
     }
 
@@ -209,6 +214,14 @@ public class ProfileManager {
         readLock.lock();
         try {
             for (ProfileElement element : profileMap.values()) {
+                Map<String, String> infoStrings = element.infoStrings;
+                List<String> row = Lists.newArrayList();
+                for (String str : PROFILE_HEADERS) {
+                    row.add(infoStrings.get(str));
+                }
+                result.add(0, row);
+            }
+            for (ProfileElement element : loadProfileMap.values()) {
                 Map<String, String> infoStrings = element.infoStrings;
                 List<String> row = Lists.newArrayList();
                 for (String str : PROFILE_HEADERS) {
@@ -227,6 +240,16 @@ public class ProfileManager {
         try {
             loadProfileMap.remove(queryId);
             profileMap.remove(queryId);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public void clearProfiles() {
+        writeLock.lock();
+        try {
+            loadProfileMap.clear();
+            profileMap.clear();
         } finally {
             writeLock.unlock();
         }
@@ -254,7 +277,7 @@ public class ProfileManager {
     public ProfileElement getProfileElement(String queryId) {
         readLock.lock();
         try {
-            return profileMap.get(queryId);
+            return profileMap.get(queryId) == null ? loadProfileMap.get(queryId) : profileMap.get(queryId);
         } finally {
             readLock.unlock();
         }
@@ -265,25 +288,34 @@ public class ProfileManager {
         readLock.lock();
         try {
             result.addAll(profileMap.values());
+            result.addAll(loadProfileMap.values());
         } finally {
             readLock.unlock();
         }
         return result;
     }
 
-    public long getQueryProfileCount() {
-        readLock.lock();
-        try {
-            return profileMap.size();
-        } finally {
-            readLock.unlock();
-        }
+    @Override
+    public Map<String, Long> estimateCount() {
+        return ImmutableMap.of("QueryProfile", (long) profileMap.size(),
+                "LoadProfile", (long) loadProfileMap.size());
     }
 
-    public long getLoadProfileCount() {
+    @Override
+    public List<Pair<List<Object>, Long>> getSamples() {
         readLock.lock();
         try {
-            return loadProfileMap.size();
+            List<Object> profileSamples = profileMap.values()
+                    .stream()
+                    .limit(MEMORY_PROFILE_SAMPLES)
+                    .collect(Collectors.toList());
+            List<Object> loadProfileSamples = loadProfileMap.values()
+                    .stream()
+                    .limit(MEMORY_PROFILE_SAMPLES)
+                    .collect(Collectors.toList());
+
+            return Lists.newArrayList(Pair.create(profileSamples, (long) profileMap.size()),
+                    Pair.create(loadProfileSamples, (long) loadProfileMap.size()));
         } finally {
             readLock.unlock();
         }

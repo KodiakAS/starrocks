@@ -36,6 +36,7 @@ import com.starrocks.thrift.TFinishTaskRequest;
 import com.starrocks.thrift.TIndexReplicationInfo;
 import com.starrocks.thrift.TPartitionReplicationInfo;
 import com.starrocks.thrift.TReplicaReplicationInfo;
+import com.starrocks.thrift.TSnapshotInfo;
 import com.starrocks.thrift.TStatus;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TTableReplicationRequest;
@@ -61,6 +62,8 @@ public class ReplicationJobTest {
     private static Database db;
     private static OlapTable table;
     private static OlapTable srcTable;
+    private static Partition partition;
+    private static Partition srcPartition;
     private ReplicationJob job;
 
     @BeforeClass
@@ -70,17 +73,20 @@ public class ReplicationJobTest {
         starRocksAssert = new StarRocksAssert(AnalyzeTestUtil.getConnectContext());
         starRocksAssert.withDatabase("test").useDatabase("test");
 
-        db = GlobalStateMgr.getCurrentState().getDb("test");
+        db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
 
         String sql = "create table single_partition_duplicate_key (key1 int, key2 varchar(10))\n" +
-                "distributed by hash(key1) buckets 1\n" +
-                "properties('replication_num' = '1'); ";
+                    "distributed by hash(key1) buckets 1\n" +
+                    "properties('replication_num' = '1'); ";
         CreateTableStmt createTableStmt = (CreateTableStmt) UtFrameUtils.parseStmtWithNewParser(sql,
-                AnalyzeTestUtil.getConnectContext());
+                    AnalyzeTestUtil.getConnectContext());
         StarRocksAssert.utCreateTableWithRetry(createTableStmt);
-        table = (OlapTable) db.getTable("single_partition_duplicate_key");
-
+        table = (OlapTable) GlobalStateMgr.getCurrentState().getLocalMetastore()
+                    .getTable(db.getFullName(), "single_partition_duplicate_key");
         srcTable = DeepCopy.copyWithGson(table, OlapTable.class);
+
+        partition = table.getPartitions().iterator().next();
+        srcPartition = srcTable.getPartitions().iterator().next();
 
         new MockUp<AgentTaskExecutor>() {
             @Mock
@@ -92,22 +98,24 @@ public class ReplicationJobTest {
 
     @Before
     public void setUp() throws Exception {
-        Partition partition = table.getPartitions().iterator().next();
-        Partition srcPartition = srcTable.getPartitions().iterator().next();
-        partition.updateVersionForRestore(10);
-        srcPartition.updateVersionForRestore(partition.getCommittedVersion() + 100);
+        partition.getDefaultPhysicalPartition().updateVersionForRestore(10);
+        srcPartition.getDefaultPhysicalPartition().updateVersionForRestore(100);
+        partition.getDefaultPhysicalPartition().setDataVersion(8);
+        partition.getDefaultPhysicalPartition().setNextDataVersion(9);
+        srcPartition.getDefaultPhysicalPartition().setDataVersion(98);
+        srcPartition.getDefaultPhysicalPartition().setNextDataVersion(99);
 
         job = new ReplicationJob(null, "test_token", db.getId(), table, srcTable,
-                GlobalStateMgr.getCurrentSystemInfo());
+                    GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo());
     }
 
     @Test
     public void testJobId() {
         ReplicationJob jobWithoutId = new ReplicationJob(null, "test_token", db.getId(), table, srcTable,
-                GlobalStateMgr.getCurrentSystemInfo());
+                    GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo());
         Assert.assertFalse(jobWithoutId.getJobId().isEmpty());
         ReplicationJob jobWithId = new ReplicationJob("fake_id", "test_token", db.getId(), table, srcTable,
-                GlobalStateMgr.getCurrentSystemInfo());
+                    GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo());
         Assert.assertEquals("fake_id", jobWithId.getJobId());
     }
 
@@ -129,12 +137,11 @@ public class ReplicationJobTest {
         for (AgentTask task : runningTasks.values()) {
             TFinishTaskRequest request = new TFinishTaskRequest();
             request.setTask_status(new TStatus(TStatusCode.OK));
-            request.setSnapshot_path("test_snapshot_path");
-            request.setIncremental_snapshot(true);
+            request.setSnapshot_info(newTSnapshotInfo(new TBackend("test_host", 0, 0), "test_snapshot_path", true));
             job.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
 
             Deencapsulation.invoke(new LeaderImpl(), "finishRemoteSnapshotTask",
-                    (RemoteSnapshotTask) task, request);
+                        (RemoteSnapshotTask) task, request);
             ((RemoteSnapshotTask) task).toThrift();
             task.toString();
         }
@@ -148,13 +155,18 @@ public class ReplicationJobTest {
             job.finishReplicateSnapshotTask((ReplicateSnapshotTask) task, request);
 
             Deencapsulation.invoke(new LeaderImpl(), "finishReplicateSnapshotTask",
-                    (ReplicateSnapshotTask) task, request);
+                        (ReplicateSnapshotTask) task, request);
             ((ReplicateSnapshotTask) task).toThrift();
             task.toString();
         }
 
         job.run();
         Assert.assertEquals(ReplicationJobState.COMMITTED, job.getState());
+
+        Assert.assertEquals(partition.getDefaultPhysicalPartition().getCommittedVersion(),
+                srcPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        Assert.assertEquals(partition.getDefaultPhysicalPartition().getCommittedDataVersion(),
+                srcPartition.getDefaultPhysicalPartition().getDataVersion());
     }
 
     @Test
@@ -193,8 +205,7 @@ public class ReplicationJobTest {
         for (AgentTask task : runningTasks.values()) {
             TFinishTaskRequest request = new TFinishTaskRequest();
             request.setTask_status(new TStatus(TStatusCode.OK));
-            request.setSnapshot_path("test_snapshot_path");
-            request.setIncremental_snapshot(true);
+            request.setSnapshot_info(newTSnapshotInfo(new TBackend("test_host", 0, 0), "test_snapshot_path", true));
             job.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
@@ -222,8 +233,7 @@ public class ReplicationJobTest {
         for (AgentTask task : runningTasks.values()) {
             TFinishTaskRequest request = new TFinishTaskRequest();
             request.setTask_status(new TStatus(TStatusCode.OK));
-            request.setSnapshot_path("test_snapshot_path");
-            request.setIncremental_snapshot(true);
+            request.setSnapshot_info(newTSnapshotInfo(new TBackend("test_host", 0, 0), "test_snapshot_path", true));
             job.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
@@ -256,20 +266,8 @@ public class ReplicationJobTest {
         Map<AgentTask, AgentTask> runningTasks = Deencapsulation.getField(job, "runningTasks");
         for (AgentTask task : runningTasks.values()) {
             TFinishTaskRequest request = new TFinishTaskRequest();
-            TStatus status = new TStatus(TStatusCode.OK);
-            request.setTask_status(status);
+            request.setTask_status(new TStatus(TStatusCode.OK));
             job.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
-        }
-
-        job.run();
-        Assert.assertEquals(ReplicationJobState.REPLICATING, job.getState());
-
-        for (AgentTask task : runningTasks.values()) {
-            TFinishTaskRequest request = new TFinishTaskRequest();
-            TStatus status = new TStatus(TStatusCode.INTERNAL_ERROR);
-            status.addToError_msgs("failed");
-            request.setTask_status(status);
-            job.finishReplicateSnapshotTask((ReplicateSnapshotTask) task, request);
         }
 
         job.run();
@@ -290,8 +288,7 @@ public class ReplicationJobTest {
         for (AgentTask task : runningTasks.values()) {
             TFinishTaskRequest request = new TFinishTaskRequest();
             request.setTask_status(new TStatus(TStatusCode.OK));
-            request.setSnapshot_path("test_snapshot_path");
-            request.setIncremental_snapshot(true);
+            request.setSnapshot_info(newTSnapshotInfo(new TBackend("test_host", 0, 0), "test_snapshot_path", true));
             job.finishRemoteSnapshotTask((RemoteSnapshotTask) task, request);
         }
 
@@ -326,13 +323,14 @@ public class ReplicationJobTest {
         Partition partition = table.getPartitions().iterator().next();
         Partition srcPartition = srcTable.getPartitions().iterator().next();
         partitionInfo.partition_id = partition.getId();
-        partitionInfo.src_version = srcPartition.getVisibleVersion();
+        partitionInfo.src_version = srcPartition.getDefaultPhysicalPartition().getVisibleVersion();
+        partitionInfo.src_version_epoch = srcPartition.getDefaultPhysicalPartition().getVersionEpoch();
         request.partition_replication_infos.put(partitionInfo.partition_id, partitionInfo);
 
         partitionInfo.index_replication_infos = new HashMap<Long, TIndexReplicationInfo>();
         TIndexReplicationInfo indexInfo = new TIndexReplicationInfo();
-        MaterializedIndex index = partition.getBaseIndex();
-        MaterializedIndex srcIndex = srcPartition.getBaseIndex();
+        MaterializedIndex index = partition.getDefaultPhysicalPartition().getBaseIndex();
+        MaterializedIndex srcIndex = srcPartition.getDefaultPhysicalPartition().getBaseIndex();
         indexInfo.index_id = index.getId();
         indexInfo.src_schema_hash = srcTable.getSchemaHashByIndexId(srcIndex.getId());
         partitionInfo.index_replication_infos.put(indexInfo.index_id, indexInfo);
@@ -350,7 +348,8 @@ public class ReplicationJobTest {
 
             tabletInfo.replica_replication_infos = new ArrayList<TReplicaReplicationInfo>();
             TReplicaReplicationInfo replicaInfo = new TReplicaReplicationInfo();
-            Backend backend = GlobalStateMgr.getCurrentSystemInfo().getBackends().iterator().next();
+            Backend backend = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackends().iterator()
+                        .next();
             replicaInfo.src_backend = new TBackend(backend.getHost(), backend.getBePort(), backend.getHttpPort());
             tabletInfo.replica_replication_infos.add(replicaInfo);
         }
@@ -360,5 +359,13 @@ public class ReplicationJobTest {
         } catch (Exception e) {
             Assert.assertNull(e);
         }
+    }
+
+    private static TSnapshotInfo newTSnapshotInfo(TBackend backend, String snapshotPath, boolean incrementalSnapshot) {
+        TSnapshotInfo tSnapshotInfo = new TSnapshotInfo();
+        tSnapshotInfo.setBackend(backend);
+        tSnapshotInfo.setSnapshot_path(snapshotPath);
+        tSnapshotInfo.setIncremental_snapshot(incrementalSnapshot);
+        return tSnapshotInfo;
     }
 }

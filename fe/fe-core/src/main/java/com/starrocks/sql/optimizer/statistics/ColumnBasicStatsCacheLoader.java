@@ -16,11 +16,11 @@ package com.starrocks.sql.optimizer.statistics;
 
 import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
 import com.google.common.collect.ImmutableList;
-import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
@@ -130,30 +130,28 @@ public class ColumnBasicStatsCacheLoader implements AsyncCacheLoader<ColumnStats
     }
 
     private ColumnStatistic convert2ColumnStatistics(TStatisticData statisticData) throws AnalysisException {
-        Database db = GlobalStateMgr.getCurrentState().getDb(statisticData.dbId);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(statisticData.dbId);
         MetaUtils.checkDbNullAndReport(db, String.valueOf(statisticData.dbId));
-        Table table = db.getTable(statisticData.tableId);
+        Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), statisticData.tableId);
         if (!(table instanceof OlapTable)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_TABLE_ERROR, statisticData.tableId);
         }
-        Column column = table.getColumn(statisticData.columnName);
-        if (column == null) {
-            ErrorReport.reportAnalysisException(ErrorCode.ERR_BAD_FIELD_ERROR, statisticData.columnName);
-        }
+
+        Type columnType = StatisticUtils.getQueryStatisticsColumnType(table, statisticData.columnName);
         return buildColumnStatistics(statisticData, DEFAULT_INTERNAL_CATALOG_NAME, db.getFullName(), table.getName(),
-                column);
+                statisticData.columnName, columnType);
     }
 
     public static ColumnStatistic buildColumnStatistics(TStatisticData statisticData, String catalog, String db,
-                                                 String table, Column column) {
+                                                 String table, String columnName, Type columnType) {
         ColumnStatistic.Builder builder = ColumnStatistic.builder();
         double minValue = Double.NEGATIVE_INFINITY;
         double maxValue = Double.POSITIVE_INFINITY;
         double distinctValues = statisticData.countDistinct;
         try {
-            if (column.getPrimitiveType().isCharFamily()) {
+            if (columnType.getPrimitiveType().isCharFamily()) {
                 // do nothing
-            } else if (column.getPrimitiveType().equals(PrimitiveType.DATE)) {
+            } else if (columnType.getPrimitiveType().equals(PrimitiveType.DATE)) {
                 if (statisticData.isSetMin() && !statisticData.getMin().isEmpty()) {
                     minValue = (double) getLongFromDateTime(DateUtils.parseStringWithDefaultHSM(
                             statisticData.min, DateUtils.DATE_FORMATTER_UNIX));
@@ -162,7 +160,7 @@ public class ColumnBasicStatsCacheLoader implements AsyncCacheLoader<ColumnStats
                     maxValue = (double) getLongFromDateTime(DateUtils.parseStringWithDefaultHSM(
                             statisticData.max, DateUtils.DATE_FORMATTER_UNIX));
                 }
-            } else if (column.getPrimitiveType().equals(PrimitiveType.DATETIME)) {
+            } else if (columnType.getPrimitiveType().equals(PrimitiveType.DATETIME)) {
                 if (statisticData.isSetMin() && !statisticData.getMin().isEmpty()) {
                     minValue = (double) getLongFromDateTime(DateUtils.parseDatTimeString(statisticData.min));
                 }
@@ -179,12 +177,12 @@ public class ColumnBasicStatsCacheLoader implements AsyncCacheLoader<ColumnStats
             }
         } catch (Exception e) {
             LOG.warn("convert TStatisticData to ColumnStatistics failed, catalog: {}, db : {}, table : {}, " +
-                            "column : {}, errMsg : {}", catalog, db, table, column.getName(), e.getMessage());
+                            "column : {}, errMsg : {}", catalog, db, table, columnName, e.getMessage());
         }
 
         if (minValue > maxValue) {
             LOG.warn("Min: {}, Max: {} values abnormal for catalog : {}, db : {}, table : {}, column : {}",
-                    minValue, maxValue, catalog, db, table, column.getName());
+                    minValue, maxValue, catalog, db, table, columnName);
             minValue = Double.NEGATIVE_INFINITY;
             maxValue = Double.POSITIVE_INFINITY;
         }

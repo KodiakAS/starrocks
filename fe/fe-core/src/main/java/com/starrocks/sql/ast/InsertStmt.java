@@ -24,22 +24,17 @@ import com.starrocks.catalog.BlackHoleTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableFunctionTable;
-import com.starrocks.catalog.Type;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.analyzer.Field;
-import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.parser.NodePosition;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
-import static com.starrocks.analysis.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
 
 /**
  * Insert into is performed to load data from the result of query stmt.
@@ -59,8 +54,7 @@ import static com.starrocks.analysis.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
  */
 public class InsertStmt extends DmlStmt {
     public static final String STREAMING = "STREAMING";
-
-    private static final String PARQUET_FORMAT = "parquet";
+    public static final String PROPERTY_MATCH_COLUMN_BY = "match_column_by";
 
     private final TableName tblName;
     private PartitionNames targetPartitionNames;
@@ -68,8 +62,10 @@ public class InsertStmt extends DmlStmt {
     // if targetPartitionNames is not set, add all formal partitions' id of the table into it
     private List<Long> targetPartitionIds = Lists.newArrayList();
     private List<String> targetColumnNames;
+    private boolean usePartialUpdate = false;
     private QueryStatement queryStatement;
     private String label = null;
+    private String targetBranch = null;
 
     // set after parse all columns and expr in query statement
     // this result expr in the order of target table's columns
@@ -79,7 +75,6 @@ public class InsertStmt extends DmlStmt {
 
     private Table targetTable;
 
-    private List<Column> targetColumns = Lists.newArrayList();
     private boolean isOverwrite;
     private long overwriteJobId = -1;
 
@@ -101,13 +96,17 @@ public class InsertStmt extends DmlStmt {
     private final boolean blackHoleTableAsTargetTable;
     private final Map<String, String> tableFunctionProperties;
 
-    public InsertStmt(TableName tblName, PartitionNames targetPartitionNames, String label, List<String> cols,
-                      QueryStatement queryStatement, boolean isOverwrite) {
-        this(tblName, targetPartitionNames, label, cols, queryStatement, isOverwrite, NodePosition.ZERO);
-    }
+    private boolean isVersionOverwrite = false;
+
+    // column match by position or name
+    private ColumnMatchPolicy columnMatchPolicy = ColumnMatchPolicy.POSITION;
+
+    // create partition if not exists
+    private boolean isDynamicOverwrite = false;
 
     public InsertStmt(TableName tblName, PartitionNames targetPartitionNames, String label, List<String> cols,
-                      QueryStatement queryStatement, boolean isOverwrite, NodePosition pos) {
+                      QueryStatement queryStatement, boolean isOverwrite, Map<String, String> insertProperties,
+                      NodePosition pos) {
         super(pos);
         this.tblName = tblName;
         this.targetPartitionNames = targetPartitionNames;
@@ -115,6 +114,7 @@ public class InsertStmt extends DmlStmt {
         this.queryStatement = queryStatement;
         this.targetColumnNames = cols;
         this.isOverwrite = isOverwrite;
+        this.properties.putAll(insertProperties);
         this.tableFunctionAsTargetTable = false;
         this.tableFunctionProperties = null;
         this.blackHoleTableAsTargetTable = false;
@@ -182,6 +182,22 @@ public class InsertStmt extends DmlStmt {
         return overwriteJobId > 0;
     }
 
+    public void setIsVersionOverwrite(boolean isVersionOverwrite) {
+        this.isVersionOverwrite = isVersionOverwrite;
+    }
+
+    public boolean isVersionOverwrite() {
+        return isVersionOverwrite;
+    }
+
+    public void setIsDynamicOverwrite(boolean isDynamicOverwrite) {
+        this.isDynamicOverwrite = isDynamicOverwrite;
+    }
+
+    public boolean isDynamicOverwrite() {
+        return isDynamicOverwrite;
+    }
+
     public QueryStatement getQueryStatement() {
         return queryStatement;
     }
@@ -237,6 +253,14 @@ public class InsertStmt extends DmlStmt {
         return targetColumnNames;
     }
 
+    public void setUsePartialUpdate() {
+        this.usePartialUpdate = true;
+    }
+
+    public boolean usePartialUpdate() {
+        return this.usePartialUpdate;
+    }
+
     public void setTargetPartitionNames(PartitionNames targetPartitionNames) {
         this.targetPartitionNames = targetPartitionNames;
     }
@@ -245,12 +269,16 @@ public class InsertStmt extends DmlStmt {
         this.targetPartitionIds = targetPartitionIds;
     }
 
-    public List<Long> getTargetPartitionIds() {
-        return targetPartitionIds;
+    public String getTargetBranch() {
+        return targetBranch;
     }
 
-    public void setTargetColumns(List<Column> targetColumns) {
-        this.targetColumns = targetColumns;
+    public void setTargetBranch(String targetBranch) {
+        this.targetBranch = targetBranch;
+    }
+
+    public List<Long> getTargetPartitionIds() {
+        return targetPartitionIds;
     }
 
     public boolean isSpecifyKeyPartition() {
@@ -308,108 +336,47 @@ public class InsertStmt extends DmlStmt {
     }
 
     public Table makeBlackHoleTable() {
-        return new BlackHoleTable(collectSelectedFieldsFromQueryStatement());
+        List<Column> columns = collectSelectedFieldsFromQueryStatement();
+        // rename each column's name, assign unique name
+        for (int i = 0; i < columns.size(); i++) {
+            columns.get(i).setName(columns.get(i).getName() + "_blackhole_" + i);
+        }
+        return new BlackHoleTable(columns);
     }
 
     public Table makeTableFunctionTable(SessionVariable sessionVariable) {
         checkState(tableFunctionAsTargetTable, "tableFunctionAsTargetTable is false");
         List<Column> columns = collectSelectedFieldsFromQueryStatement();
-        List<String> columnNames = columns.stream()
-                .map(Column::getName)
-                .collect(Collectors.toList());
-        Set<String> duplicateColumnNames = columns.stream()
-                .map(Column::getName)
-                .filter(name -> Collections.frequency(columnNames, name) > 1)
-                .collect(Collectors.toSet());
-        if (!duplicateColumnNames.isEmpty()) {
-            throw new SemanticException("expect column names to be distinct, but got duplicate(s): " + duplicateColumnNames);
-        }
+        return new TableFunctionTable(columns, getTableFunctionProperties(), sessionVariable);
+    }
 
-        // parse table function properties
-        Map<String, String> props = getTableFunctionProperties();
-        String single = props.getOrDefault("single", "false");
-        if (!single.equalsIgnoreCase("true") && !single.equalsIgnoreCase("false")) {
-            throw new SemanticException("got invalid parameter \"single\" = \"%s\", expect a boolean value (true or false).",
-                    single);
-        }
+    public enum ColumnMatchPolicy {
+        POSITION,
+        NAME;
 
-        boolean writeSingleFile = single.equalsIgnoreCase("true");
-        String path = props.get("path");
-        String format = props.get("format");
-        String partitionBy = props.get("partition_by");
-        String compressionType = props.get("compression");
-
-        // validate properties
-        if (path == null) {
-            throw new SemanticException(
-                    "path is a mandatory property. \"path\" = \"s3://path/to/your/location/\"");
-        }
-
-        if (format == null) {
-            throw new SemanticException("format is a mandatory property. " +
-                    "Use \"format\" = \"parquet\" as only parquet format is supported now");
-        }
-
-        if (!PARQUET_FORMAT.equalsIgnoreCase(format)) {
-            throw new SemanticException("use \"format\" = \"parquet\", as only parquet format is supported now");
-        }
-
-        // if compression codec is not specified, use compression codec from session
-        if (compressionType == null) {
-            compressionType = sessionVariable.getConnectorSinkCompressionCodec();
-        }
-
-        if (!PARQUET_COMPRESSION_TYPE_MAP.containsKey(compressionType)) {
-            throw new SemanticException("compression type " + compressionType + " is not supported. " +
-                    "Use any of (uncompressed, gzip, brotli, zstd, lz4).");
-        }
-
-        if (writeSingleFile && partitionBy != null) {
-            throw new SemanticException("cannot use partition_by and single simultaneously.");
-        }
-
-        if (writeSingleFile) {
-            return new TableFunctionTable(path, format, compressionType, columns, null, true, props);
-        }
-
-        if (partitionBy == null) {
-            // prepend `data_` if path ends with forward slash
-            if (path.endsWith("/")) {
-                path += "data_";
+        public static ColumnMatchPolicy fromString(String value) {
+            for (ColumnMatchPolicy policy : values()) {
+                if (policy.name().equalsIgnoreCase(value)) {
+                    return policy;
+                }
             }
-            return new TableFunctionTable(path, format, compressionType, columns, null, false, props);
+            return null;
         }
 
-        // extra validation for using partitionBy
-        if (!path.endsWith("/")) {
-            throw new SemanticException(
-                    "If partition_by is used, path should be a directory ends with forward slash(/).");
+        public static List<String> getCandidates() {
+            return Arrays.stream(values()).map(p -> p.name().toLowerCase()).collect(Collectors.toList());
         }
+    }
 
-        // parse and validate partition columns
-        List<String> partitionColumnNames = Arrays.asList(partitionBy.split(","));
-        partitionColumnNames.replaceAll(String::trim);
-        partitionColumnNames = partitionColumnNames.stream().distinct().collect(Collectors.toList());
+    public boolean isColumnMatchByPosition() {
+        return columnMatchPolicy == ColumnMatchPolicy.POSITION;
+    }
 
-        List<String> unmatchedPartitionColumnNames = partitionColumnNames.stream().filter(col ->
-                !columnNames.contains(col)).collect(Collectors.toList());
-        if (!unmatchedPartitionColumnNames.isEmpty()) {
-            throw new SemanticException("partition columns expected to be a subset of " + columnNames +
-                    ", but got extra columns: " + unmatchedPartitionColumnNames);
-        }
+    public boolean isColumnMatchByName() {
+        return columnMatchPolicy == ColumnMatchPolicy.NAME;
+    }
 
-        List<Integer> partitionColumnIDs = partitionColumnNames.stream().map(columnNames::indexOf).collect(
-                Collectors.toList());
-
-        for (Integer partitionColumnID : partitionColumnIDs) {
-            Column partitionColumn = columns.get(partitionColumnID);
-            Type type = partitionColumn.getType();
-            if (type.isBoolean() || type.isIntegerType() || type.isDateType() || type.isStringType()) {
-                continue;
-            }
-            throw new SemanticException("partition column does not support type of " + type);
-        }
-
-        return new TableFunctionTable(path, format, compressionType, columns, partitionColumnIDs, false, props);
+    public void setColumnMatchPolicy(ColumnMatchPolicy columnMatchPolicy) {
+        this.columnMatchPolicy = columnMatchPolicy;
     }
 }

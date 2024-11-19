@@ -21,11 +21,13 @@ import com.starrocks.planner.PaimonScanNode;
 import com.starrocks.thrift.TPaimonTable;
 import com.starrocks.thrift.TTableDescriptor;
 import com.starrocks.thrift.TTableType;
-import org.apache.paimon.table.AbstractFileStoreTable;
+import org.apache.paimon.table.DataTable;
 import org.apache.paimon.types.DataField;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -33,13 +35,17 @@ import static com.starrocks.connector.ConnectorTableId.CONNECTOR_ID_GENERATOR;
 
 
 public class PaimonTable extends Table {
-    private final String catalogName;
-    private final String databaseName;
-    private final String tableName;
-    private final AbstractFileStoreTable paimonNativeTable;
-    private final List<String> partColumnNames;
-    private final List<String> paimonFieldNames;
-    private long latestSnapshotId;
+    private String catalogName;
+    private String databaseName;
+    private String tableName;
+    private org.apache.paimon.table.Table paimonNativeTable;
+    private List<String> partColumnNames;
+    private List<String> paimonFieldNames;
+    private Map<String, String> properties;
+
+    public PaimonTable() {
+        super(TableType.PAIMON);
+    }
 
     public PaimonTable(String catalogName, String dbName, String tblName, List<Column> schema,
                        org.apache.paimon.table.Table paimonNativeTable, long createTime) {
@@ -47,7 +53,7 @@ public class PaimonTable extends Table {
         this.catalogName = catalogName;
         this.databaseName = dbName;
         this.tableName = tblName;
-        this.paimonNativeTable = (AbstractFileStoreTable) paimonNativeTable;
+        this.paimonNativeTable = paimonNativeTable;
         this.partColumnNames = paimonNativeTable.partitionKeys();
         this.paimonFieldNames = paimonNativeTable.rowType().getFields().stream()
                 .map(DataField::name)
@@ -68,7 +74,7 @@ public class PaimonTable extends Table {
         return tableName;
     }
 
-    public AbstractFileStoreTable getNativeTable() {
+    public org.apache.paimon.table.Table getNativeTable() {
         return paimonNativeTable;
     }
 
@@ -79,7 +85,19 @@ public class PaimonTable extends Table {
 
     @Override
     public String getTableLocation() {
-        return paimonNativeTable.location().toString();
+        if (paimonNativeTable instanceof DataTable) {
+            return ((DataTable) paimonNativeTable).location().toString();
+        } else {
+            return paimonNativeTable.name().toString();
+        }
+    }
+
+    @Override
+    public Map<String, String> getProperties() {
+        if (properties == null) {
+            this.properties = new HashMap<>();
+        }
+        return properties;
     }
 
     @Override
@@ -141,13 +159,5 @@ public class PaimonTable extends Table {
     @Override
     public int hashCode() {
         return Objects.hash(catalogName, databaseName, tableName, createTime);
-    }
-
-    public long getLatestSnapshotId() {
-        return latestSnapshotId;
-    }
-
-    public void setLatestSnapshotId(long latestSnapshotId) {
-        this.latestSnapshotId = latestSnapshotId;
     }
 }

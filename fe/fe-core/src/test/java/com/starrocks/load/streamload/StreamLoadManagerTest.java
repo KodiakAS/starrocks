@@ -26,6 +26,7 @@ import com.starrocks.http.rest.TransactionResult;
 import com.starrocks.persist.EditLog;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.NodeMgr;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.transaction.GlobalTransactionMgr;
 import com.starrocks.transaction.TransactionState;
@@ -53,8 +54,10 @@ public class StreamLoadManagerTest {
     @Mocked
     private EditLog editLog;
 
+    private SystemInfoService systemInfoService;
     private GlobalTransactionMgr globalTransactionMgr;
     private Database db;
+    private NodeMgr nodeMgr;
 
     @Before
     public void setUp() {
@@ -80,9 +83,13 @@ public class StreamLoadManagerTest {
 
         new Expectations() {
             {
-                globalStateMgr.getDb(anyString);
+                globalStateMgr.getLocalMetastore().getDb(anyString);
                 minTimes = 0;
                 result = db;
+
+                globalStateMgr.getLocalMetastore().getTable(anyString, anyString);
+                minTimes = 0;
+                result = db.getTable(CatalogMocker.TEST_TBL_ID);
 
                 globalStateMgr.getEditLog();
                 minTimes = 0;
@@ -90,29 +97,49 @@ public class StreamLoadManagerTest {
             }
         };
 
+        new MockUp<Database>() {
+            @Mock
+            public long getDataQuota() {
+                return 100;
+            }
+        };
+
         globalTransactionMgr.addDatabaseTransactionMgr(db.getId());
-        SystemInfoService systemInfoService = new SystemInfoService();
         new Expectations() {
             {
                 GlobalStateMgr.getCurrentState();
                 minTimes = 0;
                 result = globalStateMgr;
 
-                GlobalStateMgr.getCurrentGlobalTransactionMgr();
+                GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
                 minTimes = 0;
                 result = globalTransactionMgr;
 
-                GlobalStateMgr.getCurrentSystemInfo();
+                nodeMgr = new NodeMgr();
+                globalStateMgr.getNodeMgr();
                 minTimes = 0;
-                result = systemInfoService;
-
-                systemInfoService.getBackendIds(true);
-                minTimes = 0;
-                result = Lists.newArrayList();
+                result = nodeMgr;
 
                 GlobalStateMgr.getCurrentState().getNextId();
                 minTimes = 0;
                 result = 1001L;
+            }
+        };
+
+        new Expectations(nodeMgr) {
+            {
+                systemInfoService = new SystemInfoService();
+                nodeMgr.getClusterInfo();
+                minTimes = 0;
+                result = systemInfoService;
+            }
+        };
+
+        new Expectations(systemInfoService) {
+            {
+                systemInfoService.getBackendIds(true);
+                minTimes = 0;
+                result = Lists.newArrayList();
             }
         };
     }
@@ -129,8 +156,8 @@ public class StreamLoadManagerTest {
         int channelId = 0;
         
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName, timeoutMillis, channelNum, channelId, resp);
-        
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, channelNum, channelId, resp);
+
         Map<String, StreamLoadTask> idToStreamLoadTask =
                 Deencapsulation.getField(streamLoadManager, "idToStreamLoadTask");
         Assert.assertEquals(1, idToStreamLoadTask.size());
@@ -158,7 +185,7 @@ public class StreamLoadManagerTest {
         int channelId = 1;
         
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName, timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, channelNum, channelId, resp);
         Map<String, StreamLoadTask> idToStreamLoadTask =
                 Deencapsulation.getField(streamLoadManager, "idToStreamLoadTask");
         Assert.assertEquals(1, idToStreamLoadTask.size());
@@ -178,7 +205,7 @@ public class StreamLoadManagerTest {
         int channelId = 0;
         
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName, timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, channelNum, channelId, resp);
 
         List<StreamLoadTask> tasks = streamLoadManager.getTaskByName(labelName);
         Assert.assertEquals(1, tasks.size());
@@ -201,8 +228,8 @@ public class StreamLoadManagerTest {
         int channelId = 0;
 
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName1, timeoutMillis, channelNum, channelId, resp);
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName2, timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName1, "", "", timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName2, "", "", timeoutMillis, channelNum, channelId, resp);
 
         List<StreamLoadTask> tasks = streamLoadManager.getTaskByName(null);
         Assert.assertEquals(2, tasks.size());
@@ -222,7 +249,7 @@ public class StreamLoadManagerTest {
         int channelId = 0;
 
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName, timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, channelNum, channelId, resp);
 
         StreamLoadTask task = streamLoadManager.getTaskById(1001L);
         Assert.assertNotNull(task);
@@ -245,9 +272,41 @@ public class StreamLoadManagerTest {
         int channelId = 0;
 
         TransactionResult resp = new TransactionResult();
-        streamLoadManager.beginLoadTask(dbName, tableName, labelName, timeoutMillis, channelNum, channelId, resp);
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, channelNum, channelId, resp);
 
         StreamLoadTask task = streamLoadManager.getTaskById(1002L);
         Assert.assertNull(task);
     }
+
+    @Test
+    public void testStreamLoadTaskAfterCommit() throws UserException {
+        StreamLoadMgr streamLoadManager = new StreamLoadMgr();
+
+        String dbName = "test_db";
+        String tableName = "test_tbl";
+        String labelName = "label2";
+        long timeoutMillis = 100000;
+        long warehouseId = 0;
+
+        TransactionResult resp = new TransactionResult();
+        streamLoadManager.beginLoadTask(dbName, tableName, labelName, "", "", timeoutMillis, resp, false, warehouseId);
+
+        Map<String, StreamLoadTask> idToStreamLoadTask =
+                Deencapsulation.getField(streamLoadManager, "idToStreamLoadTask");
+
+        Assert.assertEquals(1, idToStreamLoadTask.size());
+
+        StreamLoadTask task = idToStreamLoadTask.get(labelName);
+
+        TransactionState state = new TransactionState();
+        task.afterCommitted(state, true);
+        Assert.assertNotEquals(-1, task.commitTimeMs());
+
+        Assert.assertTrue(task.isUnreversibleState());
+        Assert.assertFalse(task.isFinalState());
+
+        streamLoadManager.cleanSyncStreamLoadTasks();
+        Assert.assertEquals(1, streamLoadManager.getStreamLoadTaskCount());
+    }
+
 }

@@ -14,10 +14,13 @@
 
 package com.starrocks.sql.analyzer;
 
+import com.starrocks.common.Config;
 import com.starrocks.common.ErrorReportException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.QueryStatement;
+import com.starrocks.sql.ast.SetStmt;
 import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.UserVariable;
 import com.starrocks.sql.common.UnsupportedException;
 import com.starrocks.sql.parser.ParsingException;
 import com.starrocks.utframe.StarRocksAssert;
@@ -30,6 +33,7 @@ public class AnalyzeTestUtil {
     private static String DB_NAME = "test";
 
     public static void init() throws Exception {
+        Config.enable_experimental_rowstore = true;
         // create connect context
         UtFrameUtils.createMinStarRocksCluster();
         connectContext = UtFrameUtils.createDefaultCtx();
@@ -67,6 +71,30 @@ public class AnalyzeTestUtil {
                 ") ENGINE=OLAP\n" +
                 "DUPLICATE KEY(`v7`, `v8`, v9)\n" +
                 "DISTRIBUTED BY HASH(`v7`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
+        starRocksAssert.withTable("CREATE TABLE `t3` (\n" +
+                "  `v10` bigint NULL COMMENT \"\",\n" +
+                "  `v11` bigint NULL COMMENT \"\",\n" +
+                "  `v12` bigint NULL\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`v10`, `v11`, v12)\n" +
+                "DISTRIBUTED BY HASH(`v10`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
+        starRocksAssert.withTable("CREATE TABLE `T3` (\n" +
+                "  `v10` bigint NULL COMMENT \"\",\n" +
+                "  `v11` bigint NULL COMMENT \"\",\n" +
+                "  `v12` bigint NULL\n" +
+                ") ENGINE=OLAP\n" +
+                "DUPLICATE KEY(`v10`, `v11`, v12)\n" +
+                "DISTRIBUTED BY HASH(`v10`) BUCKETS 3\n" +
                 "PROPERTIES (\n" +
                 "\"replication_num\" = \"1\",\n" +
                 "\"in_memory\" = \"false\"\n" +
@@ -154,6 +182,7 @@ public class AnalyzeTestUtil {
                 "  `pk` bigint NOT NULL COMMENT \"\",\n" +
                 "  `v1` string NOT NULL COMMENT \"\",\n" +
                 "  `v2` int NOT NULL,\n" +
+                "  `v4` int NOT NULL,\n" +
                 "  `v3` array<int> not null" +
                 ") ENGINE=OLAP\n" +
                 "PRIMARY KEY(`pk`)\n" +
@@ -352,6 +381,21 @@ public class AnalyzeTestUtil {
             Analyzer.analyze(statementBase, connectContext);
             Assert.fail("Miss semantic error exception");
         } catch (ParsingException | SemanticException | UnsupportedException | ErrorReportException e) {
+            if (!exceptMessage.equals("")) {
+                Assert.assertTrue(e.getMessage(), e.getMessage().contains(exceptMessage));
+            }
+        }
+    }
+
+    public static void analyzeSetUserVariableFail(String originStmt, String exceptMessage) {
+        try {
+            StatementBase statementBase = com.starrocks.sql.parser.SqlParser.parse(originStmt,
+                    connectContext.getSessionVariable().getSqlMode()).get(0);
+            Analyzer.analyze(statementBase, connectContext);
+            SetStmt setStmt = (SetStmt) statementBase;
+            SetStmtAnalyzer.calcuteUserVariable((UserVariable) setStmt.getSetListItems().get(0));
+            Assert.fail("Miss semantic error exception");
+        } catch (ParsingException | SemanticException | UnsupportedException e) {
             if (!exceptMessage.equals("")) {
                 Assert.assertTrue(e.getMessage(), e.getMessage().contains(exceptMessage));
             }

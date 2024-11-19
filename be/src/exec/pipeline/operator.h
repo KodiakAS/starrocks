@@ -21,7 +21,6 @@
 #include "exec/pipeline/runtime_filter_types.h"
 #include "exec/spill/operator_mem_resource_manager.h"
 #include "exprs/runtime_filter_bank.h"
-#include "gutil/casts.h"
 #include "gutil/strings/substitute.h"
 #include "runtime/mem_tracker.h"
 #include "util/runtime_profile.h"
@@ -149,7 +148,7 @@ public:
 
     int32_t get_plan_node_id() const { return _plan_node_id; }
 
-    MemTracker* mem_tracker() const { return _mem_tracker.get(); }
+    MemTracker* mem_tracker() const { return _mem_tracker; }
 
     virtual std::string get_name() const {
         return strings::Substitute("$0_$1_$2($3)", _name, _plan_node_id, this, is_finished() ? "X" : "O");
@@ -157,14 +156,14 @@ public:
 
     std::string get_raw_name() const { return _name; }
 
-    const LocalRFWaitingSet& rf_waiting_set() const;
+    virtual const LocalRFWaitingSet& rf_waiting_set() const;
 
     RuntimeFilterHub* runtime_filter_hub();
 
     std::vector<ExprContext*>& runtime_in_filters();
 
-    RuntimeFilterProbeCollector* runtime_bloom_filters();
-    const RuntimeFilterProbeCollector* runtime_bloom_filters() const;
+    virtual RuntimeFilterProbeCollector* runtime_bloom_filters();
+    virtual const RuntimeFilterProbeCollector* runtime_bloom_filters() const;
 
     virtual int64_t global_rf_wait_timeout_ns() const;
 
@@ -173,6 +172,10 @@ public:
     // equal to ExecNode::eval_conjuncts(_conjunct_ctxs, chunk), is used to apply in-filters to Operators.
     Status eval_conjuncts_and_in_filters(const std::vector<ExprContext*>& conjuncts, Chunk* chunk,
                                          FilterPtr* filter = nullptr, bool apply_filter = true);
+    // evaluate no eq join runtime in filters
+    // The no-eq join runtime filter does not have a companion bloom filter.
+    // This function only executes these filters to avoid the overhead of executing an additional runtime in filter.
+    Status eval_no_eq_join_runtime_in_filters(Chunk* chunk);
 
     // Evaluate conjuncts without cache
     Status eval_conjuncts(const std::vector<ExprContext*>& conjuncts, Chunk* chunk, FilterPtr* filter = nullptr);
@@ -264,12 +267,15 @@ public:
     // apply operation for each child operator
     virtual void for_each_child_operator(const std::function<void(Operator*)>& apply) {}
 
+    virtual void update_exec_stats(RuntimeState* state);
+
 protected:
     OperatorFactory* _factory;
     const int32_t _id;
     const std::string _name;
     // Which plan node this operator belongs to
     const int32_t _plan_node_id;
+    const bool _is_subordinate;
     const int32_t _driver_sequence;
     // _common_metrics and _unique_metrics are the only children of _runtime_profile
     // _common_metrics contains the common metrics of Operator, including counters and sub profiles,
@@ -321,9 +327,12 @@ private:
     void _init_rf_counters(bool init_bloom);
     void _init_conjuct_counters();
 
-    // All the memory usage will be automatically added to this MemTracker by memory allocate hook
-    // Do not use this MemTracker manually
-    std::shared_ptr<MemTracker> _mem_tracker = nullptr;
+    // All the memory usage will be automatically added to this MemTracker by memory allocate hook.
+    // DO NOT use this MemTracker manually.
+    // The MemTracker is owned by QueryContext, so that all the operators with the same plan_node_id can share
+    // the same MemTracker.
+    MemTracker* _mem_tracker = nullptr;
+    std::vector<ExprContext*> _runtime_in_filters;
 };
 
 class OperatorFactory {
@@ -370,6 +379,8 @@ public:
     RuntimeFilterHub* runtime_filter_hub() { return _runtime_filter_hub; }
 
     std::vector<ExprContext*>& get_runtime_in_filters() { return _runtime_in_filters; }
+    // acquire local colocate runtime filter
+    std::vector<ExprContext*> get_colocate_runtime_in_filters(size_t driver_sequence);
     RuntimeFilterProbeCollector* get_runtime_bloom_filters() {
         if (_runtime_filter_collector == nullptr) {
             return nullptr;
@@ -400,6 +411,8 @@ public:
 
 protected:
     void _prepare_runtime_in_filters(RuntimeState* state);
+    void _prepare_runtime_holders(const std::vector<RuntimeFilterHolder*>& holders,
+                                  std::vector<ExprContext*>* runtime_in_filters);
 
     const int32_t _id;
     const std::string _name;

@@ -35,6 +35,7 @@
 package com.starrocks.load.loadv2;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -45,6 +46,7 @@ import com.starrocks.common.DdlException;
 import com.starrocks.common.LabelAlreadyUsedException;
 import com.starrocks.common.LoadException;
 import com.starrocks.common.MetaNotFoundException;
+import com.starrocks.common.Pair;
 import com.starrocks.common.TimeoutException;
 import com.starrocks.common.UserException;
 import com.starrocks.common.io.Writable;
@@ -54,13 +56,16 @@ import com.starrocks.load.EtlJobType;
 import com.starrocks.load.FailMsg;
 import com.starrocks.load.FailMsg.CancelType;
 import com.starrocks.load.Load;
+import com.starrocks.memory.MemoryTrackable;
 import com.starrocks.persist.AlterLoadJobOperationLog;
+import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
 import com.starrocks.persist.metablock.SRMetaBlockReader;
 import com.starrocks.persist.metablock.SRMetaBlockWriter;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.scheduler.Coordinator;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.AlterLoadStmt;
 import com.starrocks.sql.ast.CancelLoadStmt;
@@ -70,6 +75,8 @@ import com.starrocks.thrift.TReportExecStatusParams;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TransactionStatus;
+import com.starrocks.warehouse.WarehouseLoadInfoBuilder;
+import com.starrocks.warehouse.WarehouseLoadStatusInfo;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -102,14 +109,18 @@ import java.util.stream.Collectors;
  * LoadManager.lock
  * LoadJob.lock
  */
-public class LoadMgr implements Writable {
+public class LoadMgr implements Writable, MemoryTrackable {
     private static final Logger LOG = LogManager.getLogger(LoadMgr.class);
+    private static final int MEMORY_JOB_SAMPLES = 10;
 
     private final Map<Long, LoadJob> idToLoadJob = Maps.newConcurrentMap();
     private final Map<Long, Map<String, List<LoadJob>>> dbIdToLabelToLoadJobs = Maps.newConcurrentMap();
     private final LoadJobScheduler loadJobScheduler;
 
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+
+    protected final WarehouseLoadInfoBuilder warehouseLoadInfoBuilder =
+            new WarehouseLoadInfoBuilder();
 
     public LoadMgr(LoadJobScheduler loadJobScheduler) {
         this.loadJobScheduler = loadJobScheduler;
@@ -124,7 +135,9 @@ public class LoadMgr implements Writable {
     public void createLoadJobFromStmt(LoadStmt stmt, ConnectContext context) throws DdlException {
         Database database = checkDb(stmt.getLabel().getDbName());
         long dbId = database.getId();
-        LoadJob loadJob = null;
+        // LoadJob must be created outside LoadMgr's lock because the database lock will be held in fromLoadStmt().
+        // In other functions, such as LeaderImpl.finishRealtimePush, the locking sequence is: db Lock => LoadMgr Lock.
+        LoadJob loadJob = BulkLoadJob.fromLoadStmt(stmt, context);
         writeLock();
         try {
             checkLabelUsed(dbId, stmt.getLabel().getLabelName());
@@ -136,7 +149,6 @@ public class LoadMgr implements Writable {
                         "There are more than " + Config.desired_max_waiting_jobs + " load jobs in waiting queue, "
                                 + "please retry later.");
             }
-            loadJob = BulkLoadJob.fromLoadStmt(stmt, context);
             createLoadJob(loadJob);
         } finally {
             writeUnlock();
@@ -149,7 +161,7 @@ public class LoadMgr implements Writable {
     }
 
     public void alterLoadJob(AlterLoadStmt stmt) throws DdlException {
-        Database db = GlobalStateMgr.getCurrentState().getDb(stmt.getDbName());
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(stmt.getDbName());
         if (db == null) {
             throw new DdlException("Db does not exist. name: " + stmt.getDbName());
         }
@@ -191,7 +203,7 @@ public class LoadMgr implements Writable {
         // add callback before txn created, because callback will be performed on replay without txn begin
         // register txn state listener
         if (!loadJob.isCompleted()) {
-            GlobalStateMgr.getCurrentGlobalTransactionMgr().getCallbackFactory().addCallback(loadJob);
+            GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getCallbackFactory().addCallback(loadJob);
         }
     }
 
@@ -227,31 +239,37 @@ public class LoadMgr implements Writable {
         }
     }
 
-    public long registerLoadJob(String label, String dbName, long tableId, EtlJobType jobType,
-                                long createTimestamp, long estimateScanRows, TLoadJobType type, long timeout)
-            throws UserException {
-
+    public InsertLoadJob registerInsertLoadJob(String label, String dbName, long tableId, long txnId, String loadId, String user,
+                                               EtlJobType jobType, long createTimestamp, long estimateScanRows,
+                                               int estimateFileNum, long estimateFileSize, TLoadJobType type, long timeout,
+                                               Coordinator coordinator) throws UserException {
         // get db id
-        Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         if (db == null) {
             throw new MetaNotFoundException("Database[" + dbName + "] does not exist");
         }
 
-        LoadJob loadJob;
+        InsertLoadJob loadJob;
         if (Objects.requireNonNull(jobType) == EtlJobType.INSERT) {
-            loadJob =
-                    new InsertLoadJob(label, db.getId(), tableId, createTimestamp, estimateScanRows, type, timeout);
+            loadJob = new InsertLoadJob(label, db.getId(), tableId, txnId, loadId, user,
+                    createTimestamp, type, timeout, coordinator);
+            loadJob.setLoadFileInfo(estimateFileNum, estimateFileSize);
+            loadJob.setEstimateScanRow(estimateScanRows);
+            loadJob.setTransactionId(txnId);
         } else {
             throw new LoadException("Unknown job type [" + jobType.name() + "]");
         }
         addLoadJob(loadJob);
+        if (!loadJob.isCompleted()) {
+            GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getCallbackFactory().addCallback(loadJob);
+        }
         // persistent
         GlobalStateMgr.getCurrentState().getEditLog().logCreateLoadJob(loadJob);
-        return loadJob.getId();
+        return loadJob;
     }
 
     public void cancelLoadJob(CancelLoadStmt stmt) throws DdlException {
-        Database db = GlobalStateMgr.getCurrentState().getDb(stmt.getDbName());
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(stmt.getDbName());
         if (db == null) {
             throw new DdlException("Db does not exist. name: " + stmt.getDbName());
         }
@@ -292,7 +310,7 @@ public class LoadMgr implements Writable {
         }
         job.unprotectReadEndOperation(operation, true);
 
-        GlobalStateMgr.getCurrentGlobalTransactionMgr().getCallbackFactory().removeCallback(job.id);
+        GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getCallbackFactory().removeCallback(job.id);
 
         LOG.info(new LogBuilder(LogKey.LOAD_JOB, operation.getId())
                 .add("operation", operation)
@@ -373,6 +391,8 @@ public class LoadMgr implements Writable {
         if (job instanceof SparkLoadJob) {
             ((SparkLoadJob) job).clearSparkLauncherLog();
         }
+
+        warehouseLoadInfoBuilder.withRemovedJob(job);
     }
 
     private boolean isJobExpired(LoadJob job, long currentTimeMs) {
@@ -395,7 +415,7 @@ public class LoadMgr implements Writable {
         }
 
         insertJobs.forEach(job -> {
-            TransactionState state = GlobalStateMgr.getCurrentGlobalTransactionMgr().getLabelTransactionState(
+            TransactionState state = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getLabelTransactionState(
                     job.getDbId(), job.getLabel());
             if (state == null || state.getTransactionStatus() == TransactionStatus.UNKNOWN) {
                 try {
@@ -562,13 +582,13 @@ public class LoadMgr implements Writable {
     }
 
     public List<LoadJob> getLoadJobsByDb(long dbId, String labelValue, boolean accurateMatch) {
-
         List<LoadJob> loadJobList = Lists.newArrayList();
-        if (dbId != -1 && !dbIdToLabelToLoadJobs.containsKey(dbId)) {
-            return loadJobList;
-        }
         readLock();
         try {
+            if (dbId != -1 && !dbIdToLabelToLoadJobs.containsKey(dbId)) {
+                return loadJobList;
+            }
+
             for (Map<String, List<LoadJob>> dbJobs : dbIdToLabelToLoadJobs.values()) {
                 Map<String, List<LoadJob>> labelToLoadJobs = dbId == -1 ? dbJobs : dbIdToLabelToLoadJobs.get(dbId);
 
@@ -651,7 +671,7 @@ public class LoadMgr implements Writable {
 
     private Database checkDb(String dbName) throws DdlException {
         // get db
-        Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         if (db == null) {
             LOG.warn("Database {} does not exist", dbName);
             throw new DdlException("Database[" + dbName + "] does not exist");
@@ -765,17 +785,24 @@ public class LoadMgr implements Writable {
 
     public void loadLoadJobsV2JsonFormat(SRMetaBlockReader reader)
             throws IOException, SRMetaBlockException, SRMetaBlockEOFException {
-        int size = reader.readInt();
         long now = System.currentTimeMillis();
-        while (size-- > 0) {
-            LoadJob loadJob = reader.readJson(LoadJob.class);
+        reader.readCollection(LoadJob.class, loadJob -> {
             // discard expired job right away
             if (isJobExpired(loadJob, now)) {
                 LOG.info("discard expired job: {}", loadJob);
-                continue;
+                return;
             }
 
             putLoadJob(loadJob);
+        });
+    }
+
+    public Map<Long, WarehouseLoadStatusInfo> getWarehouseLoadInfo() {
+        readLock();
+        try {
+            return warehouseLoadInfoBuilder.buildFromJobs(idToLoadJob.values());
+        } finally {
+            readUnlock();
         }
     }
 
@@ -790,19 +817,33 @@ public class LoadMgr implements Writable {
         // The commit and visible txn will callback the unfinished load job.
         // Otherwise, the load job always does not be completed while the txn is visible.
         if (!loadJob.isCompleted()) {
-            GlobalStateMgr.getCurrentGlobalTransactionMgr().getCallbackFactory().addCallback(loadJob);
+            GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getCallbackFactory().addCallback(loadJob);
         }
     }
 
-    public void saveLoadJobsV2JsonFormat(DataOutputStream out) throws IOException, SRMetaBlockException {
+    public void saveLoadJobsV2JsonFormat(ImageWriter imageWriter) throws IOException, SRMetaBlockException {
         List<LoadJob> loadJobs = idToLoadJob.values().stream().filter(this::needSave).collect(Collectors.toList());
         // 1 json for number of jobs, size of idToLoadJob for jobs
         final int cnt = 1 + loadJobs.size();
-        SRMetaBlockWriter writer = new SRMetaBlockWriter(out, SRMetaBlockID.LOAD_MGR, cnt);
-        writer.writeJson(loadJobs.size());
+        SRMetaBlockWriter writer = imageWriter.getBlockWriter(SRMetaBlockID.LOAD_MGR, cnt);
+        writer.writeInt(loadJobs.size());
         for (LoadJob loadJob : loadJobs) {
             writer.writeJson(loadJob);
         }
         writer.close();
+    }
+
+    @Override
+    public Map<String, Long> estimateCount() {
+        return ImmutableMap.of("LoadJob", (long) idToLoadJob.size());
+    }
+
+    @Override
+    public List<Pair<List<Object>, Long>> getSamples() {
+        List<Object> samples = idToLoadJob.values()
+                .stream()
+                .limit(MEMORY_JOB_SAMPLES)
+                .collect(Collectors.toList());
+        return Lists.newArrayList(Pair.create(samples, (long) idToLoadJob.size()));
     }
 }

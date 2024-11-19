@@ -37,6 +37,7 @@ package com.starrocks.transaction;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import com.google.gson.stream.JsonReader;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.catalog.FakeGlobalStateMgr;
@@ -47,9 +48,13 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.DuplicatedRequestException;
+import com.starrocks.common.ErrorCode;
+import com.starrocks.common.ErrorReportException;
+import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.LabelAlreadyUsedException;
 import com.starrocks.common.UserException;
 import com.starrocks.common.jmockit.Deencapsulation;
+import com.starrocks.common.util.concurrent.lock.LockTimeoutException;
 import com.starrocks.load.routineload.KafkaProgress;
 import com.starrocks.load.routineload.KafkaRoutineLoadJob;
 import com.starrocks.load.routineload.KafkaTaskInfo;
@@ -57,10 +62,12 @@ import com.starrocks.load.routineload.RLTaskTxnCommitAttachment;
 import com.starrocks.load.routineload.RoutineLoadJob;
 import com.starrocks.load.routineload.RoutineLoadMgr;
 import com.starrocks.load.routineload.RoutineLoadTaskInfo;
-import com.starrocks.meta.lock.LockTimeoutException;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.persist.EditLog;
+import com.starrocks.persist.ImageFormatVersion;
+import com.starrocks.persist.ImageWriter;
 import com.starrocks.persist.metablock.SRMetaBlockReader;
+import com.starrocks.persist.metablock.SRMetaBlockReaderV2;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TKafkaRLTaskProgress;
 import com.starrocks.thrift.TLoadSourceType;
@@ -82,6 +89,7 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -158,7 +166,8 @@ public class GlobalTransactionMgrTest {
         long transactionId = 0;
         try {
             transactionId = masterTransMgr
-                    .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
+                    .beginTransaction(GlobalStateMgrTestUtil.testDbId1,
+                            Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
                             GlobalStateMgrTestUtil.testTxnLable1,
                             transactionSource,
                             LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
@@ -175,7 +184,8 @@ public class GlobalTransactionMgrTest {
 
         try {
             transactionId = masterTransMgr
-                    .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
+                    .beginTransaction(GlobalStateMgrTestUtil.testDbId1,
+                            Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
                             GlobalStateMgrTestUtil.testTxnLable1,
                             transactionSource,
                             LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
@@ -210,15 +220,17 @@ public class GlobalTransactionMgrTest {
         // check status is committed
         assertEquals(TransactionStatus.COMMITTED, transactionState.getTransactionStatus());
         // check replica version
-        Partition testPartition =
-                masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
-                        .getPartition(GlobalStateMgrTestUtil.testPartition1);
+        Partition testPartition = masterGlobalStateMgr.getLocalMetastore()
+                .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
+                .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2,
+                testPartition.getDefaultPhysicalPartition().getNextVersion());
         // check partition next version
-        LocalTablet tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
-                .getTablet(GlobalStateMgrTestUtil.testTabletId1);
+        LocalTablet tablet =
+                (LocalTablet) testPartition.getDefaultPhysicalPartition().getIndex(GlobalStateMgrTestUtil.testIndexId1)
+                        .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         for (Replica replica : tablet.getImmutableReplicas()) {
             assertEquals(GlobalStateMgrTestUtil.testStartVersion, replica.getVersion());
         }
@@ -279,13 +291,15 @@ public class GlobalTransactionMgrTest {
         }
         // check replica version
         Partition testPartition =
-                masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+                masterGlobalStateMgr.getLocalMetastore()
+                        .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
                         .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getDefaultPhysicalPartition().getNextVersion());
         // check partition next version
-        LocalTablet tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
+        LocalTablet tablet = (LocalTablet) testPartition.getDefaultPhysicalPartition()
+                .getIndex(GlobalStateMgrTestUtil.testIndexId1)
                 .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         for (Replica replica : tablet.getImmutableReplicas()) {
             assertEquals(GlobalStateMgrTestUtil.testStartVersion, replica.getVersion());
@@ -307,13 +321,14 @@ public class GlobalTransactionMgrTest {
         // check status is commit
         assertEquals(TransactionStatus.COMMITTED, transactionState.getTransactionStatus());
         // check replica version
-        testPartition = masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+        testPartition = masterGlobalStateMgr.getLocalMetastore()
+                .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
                 .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getDefaultPhysicalPartition().getNextVersion());
         // check partition next version
-        tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
+        tablet = (LocalTablet) testPartition.getDefaultPhysicalPartition().getIndex(GlobalStateMgrTestUtil.testIndexId1)
                 .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         for (Replica replica : tablet.getImmutableReplicas()) {
             assertEquals(GlobalStateMgrTestUtil.testStartVersion, replica.getVersion());
@@ -333,8 +348,8 @@ public class GlobalTransactionMgrTest {
         assertEquals(GlobalStateMgrTestUtil.testStartVersion, replcia2.getLastSuccessVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion, replcia3.getLastSuccessVersion());
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion, testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getDefaultPhysicalPartition().getNextVersion());
 
         transactionState = fakeEditLog.getTransaction(transactionId2);
         FakeGlobalStateMgr.setGlobalStateMgr(slaveGlobalStateMgr);
@@ -366,7 +381,7 @@ public class GlobalTransactionMgrTest {
         Map<Integer, Long> partitionIdToOffset = Maps.newHashMap();
         partitionIdToOffset.put(1, 0L);
         KafkaTaskInfo routineLoadTaskInfo =
-                new KafkaTaskInfo(UUID.randomUUID(), 1L, 20000, System.currentTimeMillis(),
+                new KafkaTaskInfo(UUID.randomUUID(), routineLoadJob, 20000, System.currentTimeMillis(),
                         partitionIdToOffset, Config.routine_load_task_timeout_second);
         Deencapsulation.setField(routineLoadTaskInfo, "txnId", 1L);
         routineLoadTaskInfoList.add(routineLoadTaskInfo);
@@ -416,7 +431,7 @@ public class GlobalTransactionMgrTest {
         TxnCommitAttachment txnCommitAttachment = new RLTaskTxnCommitAttachment(rlTaskTxnCommitAttachment);
 
         RoutineLoadMgr routineLoadManager = new RoutineLoadMgr();
-        Map<Long, Integer> beTasksNum = routineLoadManager.getBeTasksNum();
+        Map<Long, Integer> beTasksNum = routineLoadManager.getNodeTasksNum();
         beTasksNum.put(1L, 0);
         routineLoadManager.addRoutineLoadJob(routineLoadJob, "db");
 
@@ -457,7 +472,7 @@ public class GlobalTransactionMgrTest {
         Map<Integer, Long> partitionIdToOffset = Maps.newHashMap();
         partitionIdToOffset.put(1, 0L);
         KafkaTaskInfo routineLoadTaskInfo =
-                new KafkaTaskInfo(UUID.randomUUID(), 1L, 20000, System.currentTimeMillis(),
+                new KafkaTaskInfo(UUID.randomUUID(), routineLoadJob, 20000, System.currentTimeMillis(),
                         partitionIdToOffset, Config.routine_load_task_timeout_second);
         Deencapsulation.setField(routineLoadTaskInfo, "txnId", 1L);
         routineLoadTaskInfoList.add(routineLoadTaskInfo);
@@ -506,7 +521,7 @@ public class GlobalTransactionMgrTest {
         TxnCommitAttachment txnCommitAttachment = new RLTaskTxnCommitAttachment(rlTaskTxnCommitAttachment);
 
         RoutineLoadMgr routineLoadManager = new RoutineLoadMgr();
-        Map<Long, Integer> beTasksNum = routineLoadManager.getBeTasksNum();
+        Map<Long, Integer> beTasksNum = routineLoadManager.getNodeTasksNum();
         beTasksNum.put(1L, 0);
         routineLoadManager.addRoutineLoadJob(routineLoadJob, "db");
 
@@ -526,6 +541,8 @@ public class GlobalTransactionMgrTest {
 
     @Test
     public void testFinishTransaction() throws UserException {
+        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
+
         long transactionId = masterTransMgr
                 .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
                         GlobalStateMgrTestUtil.testTxnLable1,
@@ -553,15 +570,17 @@ public class GlobalTransactionMgrTest {
         transactionState = fakeEditLog.getTransaction(transactionId);
         assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         // check replica version
-        Partition testPartition =
-                masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
-                        .getPartition(GlobalStateMgrTestUtil.testPartition1);
+        Partition testPartition = masterGlobalStateMgr.getLocalMetastore()
+                .getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+                .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1,
+                testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getDefaultPhysicalPartition().getNextVersion());
         // check partition next version
-        LocalTablet tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
-                .getTablet(GlobalStateMgrTestUtil.testTabletId1);
+        LocalTablet tablet =
+                (LocalTablet) testPartition.getDefaultPhysicalPartition().getIndex(GlobalStateMgrTestUtil.testIndexId1)
+                        .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         for (Replica replica : tablet.getImmutableReplicas()) {
             if (replica.getId() == GlobalStateMgrTestUtil.testReplicaId1) {
                 assertEquals(GlobalStateMgrTestUtil.testStartVersion, replica.getVersion());
@@ -579,10 +598,12 @@ public class GlobalTransactionMgrTest {
     public void testFinishTransactionWithOneFailed() throws UserException {
         TransactionState transactionState = null;
         Partition testPartition =
-                masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+                masterGlobalStateMgr.getLocalMetastore()
+                        .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
                         .getPartition(GlobalStateMgrTestUtil.testPartition1);
-        LocalTablet tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
-                .getTablet(GlobalStateMgrTestUtil.testTabletId1);
+        LocalTablet tablet =
+                (LocalTablet) testPartition.getDefaultPhysicalPartition().getIndex(GlobalStateMgrTestUtil.testIndexId1)
+                        .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
         long transactionId = masterTransMgr
                 .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
@@ -680,11 +701,13 @@ public class GlobalTransactionMgrTest {
         // check status is commit
         assertEquals(TransactionStatus.COMMITTED, transactionState.getTransactionStatus());
         // check replica version
-        testPartition = masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+        testPartition = masterGlobalStateMgr.getLocalMetastore()
+                .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
                 .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1,
+                testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getDefaultPhysicalPartition().getNextVersion());
 
         // follower globalStateMgr replay the transaction
         transactionState = fakeEditLog.getTransaction(transactionId2);
@@ -696,6 +719,7 @@ public class GlobalTransactionMgrTest {
         errorReplicaIds = Sets.newHashSet();
         assertEquals(masterTransMgr.canTxnFinished(transactionState, errorReplicaIds, unfinishedBackends), false);
         errorReplicaIds = Sets.newHashSet();
+        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
         masterTransMgr.finishTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId2, errorReplicaIds);
         assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, replcia1.getVersion());
@@ -709,8 +733,9 @@ public class GlobalTransactionMgrTest {
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, replcia2.getLastSuccessVersion());
         assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, replcia3.getLastSuccessVersion());
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2,
+                testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 3, testPartition.getDefaultPhysicalPartition().getNextVersion());
 
         transactionState = fakeEditLog.getTransaction(transactionId2);
         FakeGlobalStateMgr.setGlobalStateMgr(slaveGlobalStateMgr);
@@ -759,7 +784,9 @@ public class GlobalTransactionMgrTest {
         File tempFile = File.createTempFile("GlobalTransactionMgrTest", ".image");
         System.err.println("write image " + tempFile.getAbsolutePath());
         DataOutputStream dos = new DataOutputStream(new FileOutputStream(tempFile));
-        masterTransMgr.saveTransactionStateV2(dos);
+        ImageWriter imageWriter = new ImageWriter("", ImageFormatVersion.v2, 0);
+        imageWriter.setOutputStream(dos);
+        masterTransMgr.saveTransactionStateV2(imageWriter);
         dos.close();
 
         masterTransMgr.removeDatabaseTransactionMgr(dbId);
@@ -768,7 +795,7 @@ public class GlobalTransactionMgrTest {
         // 4. read & check if expired
         DataInputStream dis = new DataInputStream(new FileInputStream(tempFile));
         Assert.assertEquals(0, masterTransMgr.getDatabaseTransactionMgr(dbId).getTransactionNum());
-        SRMetaBlockReader srMetaBlockReader = new SRMetaBlockReader(dis);
+        SRMetaBlockReader srMetaBlockReader = new SRMetaBlockReaderV2(new JsonReader(new InputStreamReader(dis)));
         masterTransMgr.loadTransactionStateV2(srMetaBlockReader);
         dis.close();
         Assert.assertEquals(1, masterTransMgr.getDatabaseTransactionMgr(dbId).getTransactionNum());
@@ -777,6 +804,8 @@ public class GlobalTransactionMgrTest {
 
     @Test
     public void testPrepareTransaction() throws UserException {
+        FakeGlobalStateMgr.setGlobalStateMgr(masterGlobalStateMgr);
+
         long transactionId = masterTransMgr
                 .beginTransaction(GlobalStateMgrTestUtil.testDbId1, Lists.newArrayList(GlobalStateMgrTestUtil.testTableId1),
                         GlobalStateMgrTestUtil.testTxnLable1,
@@ -794,12 +823,13 @@ public class GlobalTransactionMgrTest {
         transTablets.add(tabletCommitInfo2);
         transTablets.add(tabletCommitInfo3);
         masterTransMgr.prepareTransaction(GlobalStateMgrTestUtil.testDbId1, transactionId, transTablets,
-                        Lists.newArrayList(), null);
+                Lists.newArrayList(), null);
         TransactionState transactionState = fakeEditLog.getTransaction(transactionId);
         assertEquals(TransactionStatus.PREPARED, transactionState.getTransactionStatus());
 
         try {
-            masterTransMgr.commitPreparedTransaction(masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1), transactionId,
+            masterTransMgr.commitPreparedTransaction(
+                    masterGlobalStateMgr.getLocalMetastore().getDb(GlobalStateMgrTestUtil.testDbId1), transactionId,
                     (long) 1000);
             Assert.fail("should throw publish timeout exception");
         } catch (UserException e) {
@@ -815,14 +845,17 @@ public class GlobalTransactionMgrTest {
         assertEquals(TransactionStatus.VISIBLE, transactionState.getTransactionStatus());
         // check replica version
         Partition testPartition =
-                masterGlobalStateMgr.getDb(GlobalStateMgrTestUtil.testDbId1).getTable(GlobalStateMgrTestUtil.testTableId1)
+                masterGlobalStateMgr.getLocalMetastore()
+                        .getTable(GlobalStateMgrTestUtil.testDbId1, GlobalStateMgrTestUtil.testTableId1)
                         .getPartition(GlobalStateMgrTestUtil.testPartition1);
         // check partition version
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1, testPartition.getVisibleVersion());
-        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getNextVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 1,
+                testPartition.getDefaultPhysicalPartition().getVisibleVersion());
+        assertEquals(GlobalStateMgrTestUtil.testStartVersion + 2, testPartition.getDefaultPhysicalPartition().getNextVersion());
         // check partition next version
-        LocalTablet tablet = (LocalTablet) testPartition.getIndex(GlobalStateMgrTestUtil.testIndexId1)
-                .getTablet(GlobalStateMgrTestUtil.testTabletId1);
+        LocalTablet tablet =
+                (LocalTablet) testPartition.getDefaultPhysicalPartition().getIndex(GlobalStateMgrTestUtil.testIndexId1)
+                        .getTablet(GlobalStateMgrTestUtil.testTabletId1);
         for (Replica replica : tablet.getImmutableReplicas()) {
             if (replica.getId() == GlobalStateMgrTestUtil.testReplicaId1) {
                 assertEquals(GlobalStateMgrTestUtil.testStartVersion, replica.getVersion());
@@ -845,11 +878,11 @@ public class GlobalTransactionMgrTest {
                         LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
 
         UtFrameUtils.PseudoImage pseudoImage = new UtFrameUtils.PseudoImage();
-        masterTransMgr.saveTransactionStateV2(pseudoImage.getDataOutputStream());
+        masterTransMgr.saveTransactionStateV2(pseudoImage.getImageWriter());
 
         GlobalTransactionMgr followerTransMgr = new GlobalTransactionMgr(masterGlobalStateMgr);
         followerTransMgr.addDatabaseTransactionMgr(GlobalStateMgrTestUtil.testDbId1);
-        SRMetaBlockReader reader = new SRMetaBlockReader(pseudoImage.getDataInputStream());
+        SRMetaBlockReader reader = new SRMetaBlockReaderV2(pseudoImage.getJsonReader());
         followerTransMgr.loadTransactionStateV2(reader);
         reader.close();
 
@@ -862,25 +895,29 @@ public class GlobalTransactionMgrTest {
         Database db = new Database(10, "db0");
         GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
         DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, GlobalStateMgr.getCurrentState()));
+        TransactionState transactionState = spy(new TransactionState());
 
         long now = System.currentTimeMillis();
+        doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001);
         doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
-        doThrow(new CommitRateExceededException(1001, now + 50))
+        doThrow(new CommitRateExceededException(1001, now + 60 * 1000L))
                 .when(dbTransactionMgr)
                 .commitTransaction(1001L, Collections.emptyList(), Collections.emptyList(), null);
         Assert.assertThrows(CommitRateExceededException.class, () -> globalTransactionMgr.commitAndPublishTransaction(db, 1001,
-                    Collections.emptyList(), Collections.emptyList(), 10, null));
+                Collections.emptyList(), Collections.emptyList(), 10, null));
     }
 
     @Test
     public void testPublishVersionTimeout()
-            throws UserException {
+            throws UserException, LockTimeoutException {
         Database db = new Database(10, "db0");
         GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
         DatabaseTransactionMgr dbTransactionMgr = spy(new DatabaseTransactionMgr(10L, GlobalStateMgr.getCurrentState()));
+        TransactionState transactionState = spy(new TransactionState());
 
         long now = System.currentTimeMillis();
         doReturn(dbTransactionMgr).when(globalTransactionMgr).getDatabaseTransactionMgr(db.getId());
+        doReturn(transactionState).when(globalTransactionMgr).getTransactionState(db.getId(), 1001);
         doReturn(new VisibleStateWaiter(new TransactionState()))
                 .when(dbTransactionMgr)
                 .commitTransaction(1001L, Collections.emptyList(), Collections.emptyList(), null);
@@ -905,12 +942,17 @@ public class GlobalTransactionMgrTest {
 
     @Test
     public void testRetryCommitOnRateLimitExceededThrowLockTimeoutException()
-            throws UserException {
+            throws UserException, LockTimeoutException {
         Database db = new Database(10L, "db0");
         GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
+        TransactionState transactionState = new TransactionState();
+        doReturn(transactionState)
+                .when(globalTransactionMgr)
+                .getTransactionState(10L, 1001L);
+
         doThrow(LockTimeoutException.class)
                 .when(globalTransactionMgr)
-                .commitTransaction(10L, 1001L, Collections.emptyList(), Collections.emptyList(), null);
+                .retryCommitOnRateLimitExceeded(db, 1001L, Collections.emptyList(), Collections.emptyList(), null, 10L);
         Assert.assertThrows(LockTimeoutException.class, () -> globalTransactionMgr.commitAndPublishTransaction(db, 1001L,
                 Collections.emptyList(), Collections.emptyList(), 10L, null));
     }
@@ -925,5 +967,65 @@ public class GlobalTransactionMgrTest {
                         LoadJobSourceType.FRONTEND, Config.stream_load_default_timeout_second);
         long res = masterTransMgr.getTransactionNumByCoordinateBe("localbe");
         assertEquals(1, res);
+    }
+
+    @Test
+    public void testBeginTransactionFailed() {
+        Config.disable_load_job = true;
+        boolean exceptionThrown = false;
+        try {
+            masterTransMgr.beginTransaction(1L, null, "xxx", null, null, LoadJobSourceType.FRONTEND, 1L, 1000L);
+        } catch (Exception e) {
+            Assert.assertTrue(e instanceof ErrorReportException);
+            Assert.assertEquals(ErrorCode.ERR_BEGIN_TXN_FAILED, ((ErrorReportException) e).getErrorCode());
+            exceptionThrown = true;
+        } finally {
+            Config.disable_load_job = false;
+        }
+        Assert.assertTrue(exceptionThrown);
+
+        Config.metadata_enable_recovery_mode = true;
+        exceptionThrown = false;
+        try {
+            masterTransMgr.beginTransaction(1L, null, "xxx", null, null, LoadJobSourceType.FRONTEND, 1L, 1000L);
+        } catch (Exception e) {
+            Assert.assertTrue(e instanceof ErrorReportException);
+            Assert.assertEquals(ErrorCode.ERR_BEGIN_TXN_FAILED, ((ErrorReportException) e).getErrorCode());
+            exceptionThrown = true;
+        } finally {
+            Config.metadata_enable_recovery_mode = false;
+        }
+        Assert.assertTrue(exceptionThrown);
+
+        GlobalStateMgr.getCurrentState().setSafeMode(true);
+        exceptionThrown = false;
+        try {
+            masterTransMgr.beginTransaction(1L, null, "xxx", null, null, LoadJobSourceType.FRONTEND, 1L, 1000L);
+        } catch (Exception e) {
+            Assert.assertTrue(e instanceof ErrorReportException);
+            Assert.assertEquals(ErrorCode.ERR_BEGIN_TXN_FAILED, ((ErrorReportException) e).getErrorCode());
+            exceptionThrown = true;
+        } finally {
+            GlobalStateMgr.getCurrentState().setSafeMode(false);
+        }
+        Assert.assertTrue(exceptionThrown);
+    }
+
+    @Test
+    public void testCommitLockTimeout() throws UserException, LockTimeoutException {
+        Database db = new Database(10L, "db0");
+        GlobalTransactionMgr globalTransactionMgr = spy(new GlobalTransactionMgr(GlobalStateMgr.getCurrentState()));
+        doThrow(LockTimeoutException.class)
+                .when(globalTransactionMgr)
+                .commitAndPublishTransaction(db, 1001L, Collections.emptyList(), Collections.emptyList(), 10L, null);
+        Assert.assertThrows(ErrorReportException.class, () -> globalTransactionMgr.commitAndPublishTransaction(db, 1001L,
+                Collections.emptyList(), Collections.emptyList(), 10L));
+    }
+
+    @Test
+    public void testCheckValidTimeoutSecond() {
+        ExceptionChecker.expectThrowsWithMsg(AnalysisException.class,
+                "Invalid timeout: '1'. Expected values should be between 2 and 3 seconds",
+                () -> GlobalTransactionMgr.checkValidTimeoutSecond(1, 3, 2));
     }
 }

@@ -118,8 +118,8 @@ Status StreamScanOperator::_pickup_morsel(RuntimeState* state, int chunk_source_
 ChunkSourcePtr StreamScanOperator::create_chunk_source(MorselPtr morsel, int32_t chunk_source_index) {
     auto* scan_node = down_cast<ConnectorScanNode*>(_scan_node);
     auto* factory = down_cast<StreamScanOperatorFactory*>(_factory);
-    return std::make_shared<StreamChunkSource>(this, _chunk_source_profiles[chunk_source_index].get(),
-                                               std::move(morsel), scan_node, factory->get_chunk_buffer());
+    return std::make_shared<StreamChunkSource>(this, _chunk_source_profiles[0].get(), std::move(morsel), scan_node,
+                                               factory->get_chunk_buffer(), enable_adaptive_io_tasks());
 }
 
 bool StreamScanOperator::is_finished() const {
@@ -334,8 +334,10 @@ void StreamScanOperator::_close_chunk_source_unlocked(RuntimeState* state, int c
 }
 
 StreamChunkSource::StreamChunkSource(ScanOperator* op, RuntimeProfile* runtime_profile, MorselPtr&& morsel,
-                                     ConnectorScanNode* scan_node, BalancedChunkBuffer& chunk_buffer)
-        : ConnectorChunkSource(op, runtime_profile, std::move(morsel), scan_node, chunk_buffer) {}
+                                     ConnectorScanNode* scan_node, BalancedChunkBuffer& chunk_buffer,
+                                     bool enable_adaptive_io_tasks)
+        : ConnectorChunkSource(op, runtime_profile, std::move(morsel), scan_node, chunk_buffer,
+                               enable_adaptive_io_tasks) {}
 
 Status StreamChunkSource::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ConnectorChunkSource::prepare(state));

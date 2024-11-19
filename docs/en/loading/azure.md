@@ -1,21 +1,27 @@
 ---
-displayed_sidebar: "English"
+displayed_sidebar: docs
 toc_max_heading_level: 4
+keywords: ['Broker Load']
 ---
 
 # Load data from Microsoft Azure Storage
 
-import LoadMethodIntro from '../assets/commonMarkdown/loadMethodIntro.md'
+import InsertPrivNote from '../_assets/commonMarkdown/insertPrivNote.md'
 
-import InsertPrivNote from '../assets/commonMarkdown/insertPrivNote.md'
+StarRocks provides the following options for loading data from Azure:
 
-StarRocks provides the following options for loading data from AWS S3:
+- Synchronous loading using [INSERT](../sql-reference/sql-statements/loading_unloading/INSERT.md)+[`FILES()`](../sql-reference/sql-functions/table-functions/files.md)
+- Asynchronous loading using [Broker Load](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md)
 
-<LoadMethodIntro />
+Each of these options has its own advantages, which are detailed in the following sections.
+
+In most cases, we recommend that you use the INSERT+`FILES()` method, which is much easier to use.
+
+However, the INSERT+`FILES()` method currently supports only the Parquet, ORC, and CSV file formats. Therefore, if you need to load data of other file formats such as JSON, or [perform data changes such as DELETE during data loading](../loading/Load_to_Primary_Key_tables.md), you can resort to Broker Load.
 
 ## Before you begin
 
-### Make source data read
+### Make source data ready
 
 Make sure that the source data you want to load into StarRocks is properly stored in a container within your Azure storage account.
 
@@ -38,7 +44,7 @@ For information about all the authentication methods available, see [Authenticat
 
 ## Use INSERT+FILES()
 
-This method is available from v3.2 onwards and currently supports only the Parquet and ORC file formats.
+This method is available from v3.2 onwards and currently supports only the Parquet, ORC, and CSV (from v3.3.0 onwards) file formats.
 
 ### Advantages of INSERT+FILES()
 
@@ -46,9 +52,9 @@ This method is available from v3.2 onwards and currently supports only the Parqu
 
 With `FILES()`, you can:
 
-- Query the data directly from Azure using [SELECT](../sql-reference/sql-statements/data-manipulation/SELECT.md).
-- Create and load a table using [CREATE TABLE AS SELECT](../sql-reference/sql-statements/data-definition/CREATE_TABLE_AS_SELECT.md) (CTAS).
-- Load the data into an existing table using [INSERT](../sql-reference/sql-statements/data-manipulation/INSERT.md).
+- Query the data directly from Azure using [SELECT](../sql-reference/sql-statements/table_bucket_part_index/SELECT.md).
+- Create and load a table using [CREATE TABLE AS SELECT](../sql-reference/sql-statements/table_bucket_part_index/CREATE_TABLE_AS_SELECT.md) (CTAS).
+- Load the data into an existing table using [INSERT](../sql-reference/sql-statements/loading_unloading/INSERT.md).
 
 ### Typical examples
 
@@ -121,7 +127,7 @@ SELECT * FROM FILES
 );
 ```
 
-After creating the table, you can view its schema by using [DESCRIBE](../sql-reference/sql-statements/Utility/DESCRIBE.md):
+After creating the table, you can view its schema by using [DESCRIBE](../sql-reference/sql-statements/table_bucket_part_index/DESCRIBE.md):
 
 ```SQL
 DESCRIBE user_behavior_inferred;
@@ -140,14 +146,6 @@ The system returns the following query result:
 | Timestamp    | varbinary | YES  | false | NULL    |       |
 +--------------+-----------+------+-------+---------+-------+
 ```
-
-Compare the inferred schema with the schema created by hand:
-
-- data types
-- nullable
-- key fields
-
-To better control the schema of the destination table and for better query performance, we recommend that you specify the table schema by hand in production environments.
 
 Query the table to verify that the data has been loaded into it. Example:
 
@@ -208,6 +206,37 @@ DUPLICATE KEY(UserID)
 DISTRIBUTED BY HASH(UserID);
 ```
 
+Display the schema so that you can compare it with the inferred schema produced by the `FILES()` table function:
+
+```sql
+DESCRIBE user_behavior_declared;
+```
+
+```plaintext
++--------------+----------------+------+-------+---------+-------+
+| Field        | Type           | Null | Key   | Default | Extra |
++--------------+----------------+------+-------+---------+-------+
+| UserID       | int            | NO   | true  | NULL    |       |
+| ItemID       | int            | NO   | false | NULL    |       |
+| CategoryID   | int            | NO   | false | NULL    |       |
+| BehaviorType | varchar(65533) | NO   | false | NULL    |       |
+| Timestamp    | varbinary      | NO   | false | NULL    |       |
++--------------+----------------+------+-------+---------+-------+
+5 rows in set (0.00 sec)
+```
+
+:::tip
+
+Compare the schema you just created with the schema inferred earlier using the `FILES()` table function. Look at:
+
+- data types
+- nullable
+- key fields
+
+To better control the schema of the destination table and for better query performance, we recommend that you specify the table schema by hand in production environments.
+
+:::
+
 After creating the table, you can load it with INSERT INTO SELECT FROM FILES():
 
 ```SQL
@@ -241,11 +270,13 @@ The system returns a query result similar to the following, indicating that the 
 
 #### Check load progress
 
-You can query the progress of INSERT jobs from the [`loads`](../reference/information_schema/loads.md) view in the StarRocks Information Schema. This feature is supported from v3.1 onwards. Example:
+You can query the progress of INSERT jobs from the [`loads`](../sql-reference/information_schema/loads.md) view in the StarRocks Information Schema. This feature is supported from v3.1 onwards. Example:
 
 ```SQL
 SELECT * FROM information_schema.loads ORDER BY JOB_ID DESC;
 ```
+
+For information about the fields provided in the `loads` view, see [`loads`](../sql-reference/information_schema/loads.md).
 
 If you have submitted multiple load jobs, you can filter on the `LABEL` associated with the job. Example:
 
@@ -277,8 +308,6 @@ SELECT * FROM information_schema.loads WHERE LABEL = 'insert_f3fc2298-a553-11ee-
 REJECTED_RECORD_PATH: NULL
 ```
 
-For information about the fields provided in the `loads` view, see [`loads`](../reference/information_schema/loads.md).
-
 > **NOTE**
 >
 > INSERT is a synchronous command. If an INSERT job is still running, you need to open another session to check its execution status.
@@ -302,11 +331,11 @@ This method supports the following file formats:
 
 ### Data flow
 
-![Workflow of Broker Load](../assets/broker_load_how-to-work_en.png)
+![Workflow of Broker Load](../_assets/broker_load_how-to-work_en.png)
 
 1. The user creates a load job.
-2. The frontend (FE) creates a query plan and distributes the plan to the backend nodes (BE).
-3. The backend (BE) nodes pull the data from the source and load the data into StarRocks.
+2. The frontend (FE) creates a query plan and distributes the plan to the backend nodes (BEs) or compute nodes (CNs).
+3. The BEs or CNs pull the data from the source and load the data into StarRocks.
 
 ### Typical example
 
@@ -366,15 +395,17 @@ This job has four main sections:
 - `BROKER`: The connection details for the source.
 - `PROPERTIES`: The timeout value and any other properties to apply to the load job.
 
-For detailed syntax and parameter descriptions, see [BROKER LOAD](../sql-reference/sql-statements/data-manipulation/BROKER_LOAD.md).
+For detailed syntax and parameter descriptions, see [BROKER LOAD](../sql-reference/sql-statements/loading_unloading/BROKER_LOAD.md).
 
 #### Check load progress
 
-You can query the progress of Broker Load jobs from the [`loads`](../reference/information_schema/loads.md) view in the StarRocks Information Schema. This feature is supported from v3.1 onwards.
+You can query the progress of Broker Load jobs from the [`loads`](../sql-reference/information_schema/loads.md) view in the StarRocks Information Schema. This feature is supported from v3.1 onwards.
 
 ```SQL
 SELECT * FROM information_schema.loads \G
 ```
+
+For information about the fields provided in the `loads` view, see [`loads`](../sql-reference/information_schema/loads.md).
 
 If you have submitted multiple load jobs, you can filter on the `LABEL` associated with the job:
 
@@ -405,8 +436,6 @@ SELECT * FROM information_schema.loads WHERE LABEL = 'user_behavior' \G
         TRACKING_SQL: NULL
 REJECTED_RECORD_PATH: NULL
 ```
-
-For information about the fields provided in the `loads` view, see [`loads`](../reference/information_schema/loads.md).
 
 After you confirm that the load job has finished, you can check a subset of the destination table to see if the data has been successfully loaded. Example:
 

@@ -44,16 +44,16 @@ import com.starrocks.catalog.AuthorizationInfo;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.DdlException;
-import com.starrocks.common.LoadException;
 import com.starrocks.common.MetaNotFoundException;
+import com.starrocks.common.UserException;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.util.LogBuilder;
 import com.starrocks.common.util.LogKey;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.load.BrokerFileGroupAggInfo;
 import com.starrocks.load.FailMsg;
-import com.starrocks.meta.lock.LockType;
-import com.starrocks.meta.lock.Locker;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.OriginStatement;
 import com.starrocks.qe.SessionVariable;
@@ -73,7 +73,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.RejectedExecutionException;
 
 /**
  * parent class of BrokerLoadJob and SparkLoadJob from load stmt
@@ -129,7 +128,7 @@ public abstract class BulkLoadJob extends LoadJob {
     public static BulkLoadJob fromLoadStmt(LoadStmt stmt, ConnectContext context) throws DdlException {
         // get db id
         String dbName = stmt.getLabel().getDbName();
-        Database db = GlobalStateMgr.getCurrentState().getDb(dbName);
+        Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbName);
         if (db == null) {
             throw new DdlException("Database[" + dbName + "] does not exist");
         }
@@ -173,7 +172,7 @@ public abstract class BulkLoadJob extends LoadJob {
     private void checkAndSetDataSourceInfo(Database db, List<DataDescription> dataDescriptions) throws DdlException {
         // check data source info
         Locker locker = new Locker();
-        locker.lockDatabase(db, LockType.READ);
+        locker.lockDatabase(db.getId(), LockType.READ);
         try {
             for (DataDescription dataDescription : dataDescriptions) {
                 BrokerFileGroup fileGroup = new BrokerFileGroup(dataDescription);
@@ -181,12 +180,12 @@ public abstract class BulkLoadJob extends LoadJob {
                 fileGroupAggInfo.addFileGroup(fileGroup);
             }
         } finally {
-            locker.unLockDatabase(db, LockType.READ);
+            locker.unLockDatabase(db.getId(), LockType.READ);
         }
     }
 
     private AuthorizationInfo gatherAuthInfo() throws MetaNotFoundException {
-        Database database = GlobalStateMgr.getCurrentState().getDb(dbId);
+        Database database = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (database == null) {
             throw new MetaNotFoundException("Database " + dbId + "has been deleted");
         }
@@ -196,7 +195,7 @@ public abstract class BulkLoadJob extends LoadJob {
     @Override
     public Set<String> getTableNamesForShow() {
         Set<String> result = Sets.newHashSet();
-        Database database = GlobalStateMgr.getCurrentState().getDb(dbId);
+        Database database = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (database == null) {
             for (long tableId : fileGroupAggInfo.getAllTableIds()) {
                 result.add(String.valueOf(tableId));
@@ -204,7 +203,7 @@ public abstract class BulkLoadJob extends LoadJob {
             return result;
         }
         for (long tableId : fileGroupAggInfo.getAllTableIds()) {
-            Table table = database.getTable(tableId);
+            Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(database.getId(), tableId);
             if (table == null) {
                 result.add(String.valueOf(tableId));
             } else {
@@ -217,7 +216,7 @@ public abstract class BulkLoadJob extends LoadJob {
     @Override
     public Set<String> getTableNames(boolean noThrow) throws MetaNotFoundException {
         Set<String> result = Sets.newHashSet();
-        Database database = GlobalStateMgr.getCurrentState().getDb(dbId);
+        Database database = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
         if (database == null) {
             if (noThrow) {
                 return result;
@@ -228,7 +227,7 @@ public abstract class BulkLoadJob extends LoadJob {
         // The database will not be locked in here.
         // The getTable is a thread-safe method called without read lock of database
         for (long tableId : fileGroupAggInfo.getAllTableIds()) {
-            Table table = database.getTable(tableId);
+            Table table = GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(database.getId(), tableId);
             if (table == null) {
                 if (!noThrow) {
                     throw new MetaNotFoundException("Failed to find table " + tableId + " in db " + dbId);
@@ -241,7 +240,18 @@ public abstract class BulkLoadJob extends LoadJob {
     }
 
     @Override
+    protected List<TabletCommitInfo> getTabletCommitInfos() {
+        return commitInfos;
+    }
+
+    @Override
+    protected List<TabletFailInfo> getTabletFailInfos() {
+        return failInfos;
+    }
+
+    @Override
     public void onTaskFailed(long taskId, FailMsg failMsg) {
+        boolean timeoutFailure = false;
         writeLock();
         try {
             // check if job has been completed
@@ -252,43 +262,29 @@ public abstract class BulkLoadJob extends LoadJob {
                         .build());
                 return;
             }
-            LoadTask loadTask = idToTasks.get(taskId);
-            if (loadTask == null) {
-                return;
-            }
-            if (loadTask.getRetryTime() <= 0) {
+
+            if (!failMsg.getMsg().contains("timeout") || failMsg.getCancelType() == FailMsg.CancelType.USER_CANCEL) {
                 unprotectedExecuteCancel(failMsg, true);
                 logFinalOperation();
-                return;
             } else {
-                failMsg.setMsg("Still retrying, error: " + failMsg.getMsg());
-                unprotectUpdateFailMsg(failMsg);
-
-                // retry task
-                idToTasks.remove(loadTask.getSignature());
-                if (loadTask instanceof LoadLoadingTask) {
-                    loadingStatus.getLoadStatistic().removeLoad(((LoadLoadingTask) loadTask).getLoadId());
-                }
-                loadTask.updateRetryInfo();
-                idToTasks.put(loadTask.getSignature(), loadTask);
-                // load id will be added to loadStatistic when executing this task
-                try {
-                    if (loadTask.getTaskType() == LoadTask.TaskType.PENDING) {
-                        submitTask(GlobalStateMgr.getCurrentState().getPendingLoadTaskScheduler(), loadTask);
-                    } else if (loadTask.getTaskType() == LoadTask.TaskType.LOADING) {
-                        submitTask(GlobalStateMgr.getCurrentState().getLoadingLoadTaskScheduler(), loadTask);
-                    } else {
-                        throw new LoadException(String.format("Unknown load task type: %s. task id: %d, job id, %d",
-                                loadTask.getTaskType(), loadTask.getSignature(), id));
-                    }
-                } catch (RejectedExecutionException | LoadException e) {
-                    unprotectedExecuteCancel(failMsg, true);
-                    logFinalOperation();
-                    return;
-                }
+                timeoutFailure = true;
             }
         } finally {
             writeUnlock();
+        }
+
+        // For timeout failure, should abort the transaction and retry as soon as possible
+        if (timeoutFailure) {
+            try {
+                LOG.debug("Loading task with timeout failure try to abort transaction, " +
+                                "job_id: {}, task_id: {}, txn_id: {}, task fail message: {}",
+                        id, taskId, transactionId, failMsg.getMsg());
+                GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().abortTransaction(
+                        dbId, transactionId, failMsg.getMsg());
+            } catch (UserException e) {
+                LOG.warn("Loading task failed to abort transaction, job_id: {}, task_id: {}, txn_id: {}, " +
+                        "task fail message: {}, abort exception:", id, taskId, transactionId, failMsg.getMsg(), e);
+            }
         }
     }
 
@@ -309,7 +305,7 @@ public abstract class BulkLoadJob extends LoadJob {
             for (DataDescription dataDescription : stmt.getDataDescriptions()) {
                 dataDescription.analyzeWithoutCheckPriv();
             }
-            Database db = GlobalStateMgr.getCurrentState().getDb(dbId);
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(dbId);
             if (db == null) {
                 throw new DdlException("Database[" + dbId + "] does not exist");
             }
