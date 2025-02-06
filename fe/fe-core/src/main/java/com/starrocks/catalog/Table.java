@@ -34,6 +34,7 @@
 
 package com.starrocks.catalog;
 
+import com.google.common.base.Function;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
@@ -44,17 +45,14 @@ import com.starrocks.analysis.DescriptorTable.ReferencedPartitionInfo;
 import com.starrocks.catalog.constraint.ForeignKeyConstraint;
 import com.starrocks.catalog.constraint.UniqueConstraint;
 import com.starrocks.catalog.system.SystemTable;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
 import com.starrocks.persist.gson.GsonPostProcessable;
-import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TTableDescriptor;
 import org.apache.commons.lang.NotImplementedException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataOutput;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -62,6 +60,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -157,6 +156,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
                     .add(TableType.HUDI)
                     .add(TableType.ODPS)
                     .add(TableType.DELTALAKE)
+                    .add(TableType.PAIMON)
                     .build();
 
     @SerializedName(value = "id")
@@ -178,11 +178,11 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
      * When OlapTable is changing schema, the fullSchema is (c1 int, c2 int, c3 int, SHADOW_NAME_PREFIX_c3 bigint)
      * The fullSchema of OlapTable is mainly used by Scanner of Load job.
      * NOTICE: The columns of baseIndex is placed before the SHADOW_NAME_PREFIX columns
-     *
+     * <p>
      * If you want to get all visible columns, you should call getBaseSchema() method, which is override in
      * subclasses.
      * If you want to get the mv columns, you should call getIndexToSchema in Subclass OlapTable.
-     *
+     * <p>
      * If we are simultaneously executing multiple light schema change tasks, there may be occasional concurrent
      * read-write operations between these tasks with a relatively low probability.
      * Therefore, we choose to use a CopyOnWriteArrayList.
@@ -260,6 +260,18 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         return InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME;
     }
 
+    public String getResourceName() {
+        throw new NotImplementedException();
+    }
+
+    public String getCatalogDBName() {
+        throw new NotImplementedException();
+    }
+
+    public Optional<String> mayGetDatabaseName() {
+        return Optional.empty();
+    }
+
     public String getName() {
         return name;
     }
@@ -268,8 +280,19 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         this.name = name;
     }
 
+    // Table in catalog could be dropped and created
+    // Even they share the same name, they are different tables.
+    // So we use table identifier to diff them.
     public String getTableIdentifier() {
         return name;
+    }
+
+    // Table name is the name written in native table.
+    // but catalog table name is name defined in catalog.
+    // If we use resource mapping, they are probably different.
+    // And if we use catalog, I think we should stick to this catalog table name.
+    public String getCatalogTableName() {
+        throw new NotImplementedException();
     }
 
     public void setType(TableType type) {
@@ -392,6 +415,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         return type == TableType.KUDU;
     }
 
+    public boolean isHMSTable() {
+        return type == TableType.HIVE || type == TableType.HUDI || type == TableType.ODPS;
+    }
+
     // for create table
     public boolean isOlapOrCloudNativeTable() {
         return isOlapTable() || isCloudNativeTable();
@@ -425,6 +452,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         return idToColumn;
     }
 
+    public boolean isHMSExternalTable() {
+        return false;
+    }
+
     public void setNewFullSchema(List<Column> newSchema) {
         this.fullSchema = newSchema;
         updateSchemaIndex();
@@ -449,12 +480,20 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
         return nameToColumn.get(columnId.getId());
     }
 
+    public Column getColumnByUniqueId(long uniqueId) {
+        return fullSchema.stream().filter(c -> c.getUniqueId() == uniqueId).findFirst().get();
+    }
+
     public boolean containColumn(String columnName) {
         return nameToColumn.containsKey(columnName);
     }
 
     public List<Column> getColumns() {
         return new ArrayList<>(nameToColumn.values());
+    }
+
+    public List<Column> getKeyColumns() {
+        return null;
     }
 
     public void addColumn(Column column) {
@@ -467,8 +506,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
     }
 
     public String getTableLocation() {
-        String msg = "The getTableLocation() method needs to be implemented.";
-        throw new NotImplementedException(msg);
+        throw new NotImplementedException();
     }
 
     public Map<String, Column> getNameToColumn() {
@@ -477,11 +515,6 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     public TTableDescriptor toThrift(List<ReferencedPartitionInfo> partitions) {
         return null;
-    }
-
-    @Override
-    public void write(DataOutput out) throws IOException {
-        Text.writeString(out, GsonUtils.GSON.toJson(this));
     }
 
     @Override
@@ -679,7 +712,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
     /**
      * Delete this table permanently. Implementations can perform necessary cleanup work.
      *
-     * @param dbId ID of the database to which the table belongs
+     * @param dbId   ID of the database to which the table belongs
      * @param replay is this a log replay operation.
      * @return Returns true if the deletion task was performed successfully, false otherwise.
      */
@@ -689,6 +722,7 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     /**
      * Delete thie table from {@link CatalogRecycleBin}
+     *
      * @param replay is this a log relay operation.
      * @return Returns true if the deletion task was performed successfully, false otherwise.
      */
@@ -729,6 +763,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     public boolean isUnPartitioned() {
         return true;
+    }
+
+    public List<String> getDataColumnNames() {
+        throw new NotImplementedException();
     }
 
     public List<Column> getPartitionColumns() {
@@ -792,5 +830,36 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable, 
 
     public boolean isSupportBackupRestore() {
         return isOlapTableOrMaterializedView() || isOlapView();
+    }
+
+    // Sometimes when we prune a table but want to preserve a single column
+    // for olap table, we could use first key column
+    // for other tables, probably we could choose the most narrow column for performance.
+    // but theoretically we can choose any column.
+    public Column getPresentivateColumn() {
+        List<Column> keyColumns = getKeyColumns();
+        if (keyColumns != null && keyColumns.size() > 0) {
+            return keyColumns.get(0);
+        }
+        List<UniqueConstraint> uniqueConstraintList = getUniqueConstraints();
+        if (uniqueConstraintList != null) {
+            for (UniqueConstraint uc : uniqueConstraintList) {
+                for (ColumnId id : uc.getUniqueColumns()) {
+                    Column c = getColumn(id);
+                    if (c != null) {
+                        return c;
+                    }
+                }
+            }
+        }
+        return getColumns().stream().min((c1, c2) -> {
+            Function<Column, Integer> ff = c -> {
+                if (c.getType().isScalarType()) {
+                    return c.getType().getTypeSize();
+                }
+                return Integer.MAX_VALUE;
+            };
+            return ff.apply(c1) - ff.apply(c2);
+        }).get();
     }
 }

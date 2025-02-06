@@ -83,7 +83,7 @@ import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.util.DynamicPartitionUtil;
 import com.starrocks.common.util.TimeUtils;
@@ -94,6 +94,7 @@ import com.starrocks.fs.HdfsUtil;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.persist.ColocatePersistInfo;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.task.AgentBatchTask;
 import com.starrocks.task.AgentTask;
@@ -110,6 +111,7 @@ import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TTabletSchema;
 import com.starrocks.thrift.TTaskType;
+import com.starrocks.warehouse.WarehouseIdleChecker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -221,6 +223,10 @@ public class RestoreJob extends AbstractJob {
 
     public RestoreJobState getState() {
         return state;
+    }
+
+    protected void setState(RestoreJobState state) {
+        this.state = state;
     }
 
     public RestoreFileMapping getFileMapping() {
@@ -888,7 +894,7 @@ public class RestoreJob extends AbstractJob {
         for (Function fn : functions) {
             try {
                 db.addFunction(fn, true, false);
-            } catch (UserException e) {
+            } catch (StarRocksException e) {
                 status = new Status(ErrCode.COMMON_ERROR, "Add Function: " + fn.signatureString() +
                         " failed when restore");
             }
@@ -968,7 +974,8 @@ public class RestoreJob extends AbstractJob {
         AgentTaskExecutor.submit(batchTask);
     }
 
-    private boolean genFileMappingWhenBackupReplicasEqual(PartitionInfo localPartInfo, Partition localPartition,
+    private boolean genFileMappingWhenBackupReplicasEqual(PartitionInfo localPartInfo,
+                                                          Partition localPartition,
                                                           Table localTbl,
                                                           BackupPartitionInfo backupPartInfo, BackupTableInfo tblInfo) {
         if (localPartInfo.getReplicationNum(localPartition.getId()) != restoreReplicationNum) {
@@ -984,8 +991,27 @@ public class RestoreJob extends AbstractJob {
         OlapTable localOlapTbl = (OlapTable) localTbl;
         genFileMapping(localOlapTbl, localPartition, tblInfo.id, backupPartInfo,
                 true /* overwrite when commit */);
-        restoredVersionInfo.put(localOlapTbl.getId(), localPartition.getId(),
-                backupPartInfo.version);
+        if (backupPartInfo.subPartitions == null || backupPartInfo.subPartitions.isEmpty()) {
+            restoredVersionInfo.put(localOlapTbl.getId(), localPartition.getDefaultPhysicalPartition().getId(),
+                    backupPartInfo.version);
+        } else {
+            if (backupPartInfo.subPartitions.size() == 1) {
+                BackupPhysicalPartitionInfo physicalPartitionInfo =
+                        backupPartInfo.subPartitions.values().stream().findFirst().get();
+                restoredVersionInfo.put(localTbl.getId(),
+                        localPartition.getDefaultPhysicalPartition().getId(),
+                        physicalPartitionInfo.version);
+            } else {
+                for (PhysicalPartition physicalPartition : localPartition.getSubPartitions()) {
+                    BackupPhysicalPartitionInfo physicalPartitionInfo = backupPartInfo.subPartitions.get(
+                            physicalPartition.getBeforeRestoreId());
+                    restoredVersionInfo.put(localTbl.getId(),
+                            physicalPartition.getId(),
+                            physicalPartitionInfo.version);
+                }
+            }
+        }
+
         return false;
     }
 
@@ -1259,7 +1285,8 @@ public class RestoreJob extends AbstractJob {
         for (MaterializedIndex restoreIdx : restorePart.getDefaultPhysicalPartition()
                 .getMaterializedIndices(IndexExtState.VISIBLE)) {
             int schemaHash = restoreTbl.getSchemaHashByIndexId(restoreIdx.getId());
-            TabletMeta tabletMeta = new TabletMeta(dbId, restoreTbl.getId(), restorePart.getId(),
+            TabletMeta tabletMeta = new TabletMeta(dbId, restoreTbl.getId(),
+                    restorePart.getDefaultPhysicalPartition().getId(),
                     restoreIdx.getId(), schemaHash, TStorageMedium.HDD);
             for (Tablet restoreTablet : restoreIdx.getTablets()) {
                 globalStateMgr.getTabletInvertedIndex().addTablet(restoreTablet.getId(), tabletMeta);
@@ -1335,7 +1362,7 @@ public class RestoreJob extends AbstractJob {
                         BrokerDesc brokerDesc = new BrokerDesc(repo.getStorage().getProperties());
                         try {
                             HdfsUtil.getTProperties(repo.getLocation(), brokerDesc, hdfsProperties);
-                        } catch (UserException e) {
+                        } catch (StarRocksException e) {
                             status = new Status(ErrCode.COMMON_ERROR,
                                     "Get properties from " + repo.getLocation() + " error.");
                             return;
@@ -1524,6 +1551,7 @@ public class RestoreJob extends AbstractJob {
                 status = st;
             }
             MetricRepo.COUNTER_UNFINISHED_RESTORE_JOB.increase(-1L);
+            WarehouseIdleChecker.updateJobLastFinishTime(WarehouseManager.DEFAULT_WAREHOUSE_ID);
             return;
         }
         LOG.info("waiting {} tablets to commit. {}", unfinishedSignatureToId.size(), this);
@@ -1844,6 +1872,7 @@ public class RestoreJob extends AbstractJob {
             return;
         }
 
+        WarehouseIdleChecker.updateJobLastFinishTime(WarehouseManager.DEFAULT_WAREHOUSE_ID);
         LOG.info("finished to cancel restore job. is replay: {}. {}", isReplay, this);
     }
 

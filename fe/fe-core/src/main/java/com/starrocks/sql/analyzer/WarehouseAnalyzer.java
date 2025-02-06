@@ -18,10 +18,12 @@ import com.google.common.base.Strings;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.RunMode;
 import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.AstVisitor;
 import com.starrocks.sql.ast.ShowStmt;
 import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.warehouse.AlterWarehouseStmt;
 import com.starrocks.sql.ast.warehouse.CreateWarehouseStmt;
 import com.starrocks.sql.ast.warehouse.DropWarehouseStmt;
 import com.starrocks.sql.ast.warehouse.ResumeWarehouseStmt;
@@ -82,6 +84,10 @@ public class WarehouseAnalyzer {
 
         @Override
         public Void visitSetWarehouseStatement(SetWarehouseStmt statement, ConnectContext context) {
+            if (RunMode.getCurrentRunMode() == RunMode.SHARED_NOTHING) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_NOT_SUPPORTED_STATEMENT_IN_SHARED_NOTHING_MODE);
+            }
+
             String whName = statement.getWarehouseName();
             if (Strings.isNullOrEmpty(whName)) {
                 ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
@@ -92,6 +98,16 @@ public class WarehouseAnalyzer {
 
         @Override
         public Void visitShowWarehousesStatement(ShowWarehousesStmt node, ConnectContext context) {
+            return null;
+        }
+
+        @Override
+        public Void visitAlterWarehouseStatement(AlterWarehouseStmt statement, ConnectContext context) {
+            String whName = statement.getWarehouseName();
+            if (Strings.isNullOrEmpty(whName)) {
+                ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_WAREHOUSE_NAME);
+            }
+
             return null;
         }
     }

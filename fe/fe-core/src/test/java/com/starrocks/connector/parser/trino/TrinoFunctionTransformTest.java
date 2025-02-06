@@ -211,6 +211,12 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
 
         sql = "select to_timestamp('2022-02-02', 'yyyy-mm-dd')";
         assertPlanContains(sql, " to_tera_timestamp('2022-02-02', 'yyyy-mm-dd')");
+
+        sql = "select year_of_week('2022-02-02')";
+        assertPlanContains(sql, "<slot 2> : 2022");
+
+        sql = "select yow('2022-02-02')";
+        assertPlanContains(sql, "<slot 2> : 2022");
     }
 
     @Test
@@ -349,6 +355,15 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
     }
 
     @Test
+    public void testExtractFnTransform() throws Exception {
+        String sql = "SELECT extract(dow FROM TIMESTAMP '2022-10-20 05:10:00')";
+        assertPlanContains(sql, "dayofweek_iso('2022-10-20 05:10:00')");
+        sql = "SELECT extract(week FROM TIMESTAMP '2022-10-20 05:10:00')";
+        assertPlanContains(sql, "week_iso('2022-10-20 05:10:00')");
+    }
+
+
+    @Test
     public void testBitFnTransform() throws Exception {
         String sql = "select bitwise_and(19,25)";
         assertPlanContains(sql, "17");
@@ -367,6 +382,12 @@ public class TrinoFunctionTransformTest extends TrinoTestBase {
 
         sql = "select bitwise_right_shift(8, 3)";
         assertPlanContains(sql, "8 BITSHIFTRIGHT 3");
+    }
+
+    @Test
+    public void testMathFnTransform() throws Exception {
+        String sql = "select truncate(19.25)";
+        assertPlanContains(sql, "truncate(19.25, 0)");
     }
 
     @Test

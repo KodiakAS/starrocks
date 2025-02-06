@@ -20,11 +20,10 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DeltaLakeTable;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.Table;
-import com.starrocks.common.ErrorCode;
-import com.starrocks.common.ErrorReport;
 import com.starrocks.common.Pair;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
+import com.starrocks.connector.ConnectorMetadatRequestContext;
 import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.ConnectorProperties;
 import com.starrocks.connector.GetRemoteFilesParams;
@@ -38,7 +37,6 @@ import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.statistics.StatisticsUtils;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.qe.ConnectContext;
-import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.optimizer.OptimizerContext;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -115,15 +113,15 @@ public class DeltaLakeMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public List<String> listPartitionNames(String databaseName, String tableName, TableVersionRange version) {
+    public List<String> listPartitionNames(String databaseName, String tableName, ConnectorMetadatRequestContext requestContext) {
         return deltaOps.getPartitionKeys(databaseName, tableName);
     }
 
     @Override
     public List<RemoteFileInfo> getRemoteFiles(Table table, GetRemoteFilesParams params) {
         DeltaLakeTable deltaLakeTable = (DeltaLakeTable) table;
-        String dbName = deltaLakeTable.getDbName();
-        String tableName = deltaLakeTable.getTableName();
+        String dbName = deltaLakeTable.getCatalogDBName();
+        String tableName = deltaLakeTable.getCatalogTableName();
         PredicateSearchKey key =
                 PredicateSearchKey.of(dbName, tableName, params.getTableVersionRange().end().get(), params.getPredicate());
 
@@ -153,8 +151,8 @@ public class DeltaLakeMetadata implements ConnectorMetadata {
 
         DeltaLakeTable deltaLakeTable = (DeltaLakeTable) table;
         SnapshotImpl snapshot = (SnapshotImpl) deltaLakeTable.getDeltaSnapshot();
-        String dbName = deltaLakeTable.getDbName();
-        String tableName = deltaLakeTable.getTableName();
+        String dbName = deltaLakeTable.getCatalogDBName();
+        String tableName = deltaLakeTable.getCatalogTableName();
         Engine engine = deltaLakeTable.getDeltaEngine();
         StructType schema = deltaLakeTable.getDeltaMetadata().getSchema();
         PredicateSearchKey key = PredicateSearchKey.of(dbName, tableName, snapshot.getVersion(engine), predicate);
@@ -237,14 +235,8 @@ public class DeltaLakeMetadata implements ConnectorMetadata {
                 Row scanFileRow = scanFileRows.next();
 
                 DeletionVectorDescriptor dv = InternalScanFileUtils.getDeletionVectorDescriptorFromRow(scanFileRow);
-                if (dv != null) {
-                    ErrorReport.reportValidateException(ErrorCode.ERR_BAD_TABLE_ERROR, ErrorType.UNSUPPORTED,
-                            "Delta table feature [deletion vectors] is not supported");
-                }
-
-                Pair<FileScanTask, DeltaLakeAddFileStatsSerDe> pair =
-                        ScanFileUtils.convertFromRowToFileScanTask(enableCollectColumnStats, scanFileRow, estimateRowSize);
-                return pair;
+                return ScanFileUtils.convertFromRowToFileScanTask(enableCollectColumnStats, scanFileRow, metadata,
+                                estimateRowSize, dv);
             }
 
             private void ensureOpen() {

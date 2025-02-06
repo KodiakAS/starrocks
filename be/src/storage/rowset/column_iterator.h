@@ -63,7 +63,7 @@ struct ColumnIteratorOptions {
     bool use_page_cache = false;
     // temporary data does not allow caching
     bool temporary_data = false;
-    LakeIOOptions lake_io_opts{.fill_data_cache = true};
+    LakeIOOptions lake_io_opts{.fill_data_cache = true, .skip_disk_cache = false};
 
     // check whether column pages are all dictionary encoding.
     bool check_dict_encoding = false;
@@ -157,6 +157,8 @@ public:
     }
 
     virtual ordinal_t get_current_ordinal() const = 0;
+
+    virtual bool has_zone_map() const { return false; }
 
     /// Store the row ranges that satisfy the given predicates into |row_ranges|.
     /// |pred_relation| is the relation among |predicates|, it can be AND or OR.
@@ -259,9 +261,14 @@ public:
 
     virtual Status null_count(size_t* count) { return Status::OK(); };
 
+    // RAW interface, should be used carefully
+    virtual ColumnReader* get_column_reader() {
+        CHECK(false) << "unreachable";
+        return nullptr;
+    }
+
 protected:
     ColumnIteratorOptions _opts;
-    virtual ColumnReader* get_column_reader() { return nullptr; };
 };
 
 } // namespace starrocks

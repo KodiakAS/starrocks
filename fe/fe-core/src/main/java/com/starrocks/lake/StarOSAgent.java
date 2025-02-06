@@ -36,6 +36,7 @@ import com.staros.proto.PlacementRelationship;
 import com.staros.proto.QuitMetaGroupInfo;
 import com.staros.proto.ReplicaInfo;
 import com.staros.proto.ReplicaRole;
+import com.staros.proto.ReplicationType;
 import com.staros.proto.ServiceInfo;
 import com.staros.proto.ShardGroupInfo;
 import com.staros.proto.ShardInfo;
@@ -48,7 +49,7 @@ import com.staros.util.LockCloseable;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.InternalErrorCode;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.ComputeNode;
 import org.apache.logging.log4j.LogManager;
@@ -96,6 +97,17 @@ public class StarOSAgent {
     public boolean init(StarManagerServer server) {
         client = new StarClient(server);
         client.connectServer(String.format("127.0.0.1:%d", Config.cloud_native_meta_port));
+        GlobalStateMgr.getCurrentState().getConfigRefreshDaemon().registerListener(() -> {
+            client.setClientReadTimeoutSec(Config.star_client_read_timeout_seconds);
+            client.setClientListTimeoutSec(Config.star_client_list_timeout_seconds);
+            client.setClientWriteTimeoutSec(Config.star_client_write_timeout_seconds);
+        });
+        return true;
+    }
+
+    public boolean initForTest() {
+        client = new StarClient(null);
+        client.connectServer(String.format("127.0.0.1:%d", Config.cloud_native_meta_port));
         return true;
     }
 
@@ -128,7 +140,12 @@ public class StarOSAgent {
         LOG.info("get serviceId {} from starMgr", serviceId);
     }
 
+    public String getRawServiceId() {
+        return serviceId;
+    }
+
     public String addFileStore(FileStoreInfo fsInfo) throws DdlException {
+        prepare();
         try {
             return client.addFileStore(fsInfo, serviceId);
         } catch (StarClientException e) {
@@ -137,6 +154,7 @@ public class StarOSAgent {
     }
 
     public void removeFileStoreByName(String fsName) throws DdlException {
+        prepare();
         try {
             client.removeFileStoreByName(fsName, serviceId);
         } catch (StarClientException e) {
@@ -145,6 +163,7 @@ public class StarOSAgent {
     }
 
     public void updateFileStore(FileStoreInfo fsInfo) throws DdlException {
+        prepare();
         try {
             client.updateFileStore(fsInfo, serviceId);
         } catch (StarClientException e) {
@@ -153,6 +172,7 @@ public class StarOSAgent {
     }
 
     public FileStoreInfo getFileStoreByName(String fsName) throws DdlException {
+        prepare();
         try {
             return client.getFileStoreByName(fsName, serviceId);
         } catch (StarClientException e) {
@@ -164,6 +184,7 @@ public class StarOSAgent {
     }
 
     public FileStoreInfo getFileStore(String fsKey) throws DdlException {
+        prepare();
         try {
             return client.getFileStore(fsKey, serviceId);
         } catch (StarClientException e) {
@@ -175,6 +196,7 @@ public class StarOSAgent {
     }
 
     public List<FileStoreInfo> listFileStore() throws DdlException {
+        prepare();
         try {
             return client.listFileStore(serviceId);
         } catch (StarClientException e) {
@@ -199,6 +221,7 @@ public class StarOSAgent {
     }
 
     public FilePathInfo allocateFilePath(long dbId, long tableId) throws DdlException {
+        prepare();
         try {
             FileStoreType fsType = getFileStoreType(Config.cloud_native_storage_type);
             if (fsType == null || fsType == FileStoreType.INVALID) {
@@ -214,6 +237,7 @@ public class StarOSAgent {
     }
 
     public FilePathInfo allocateFilePath(String storageVolumeId, long dbId, long tableId) throws DdlException {
+        prepare();
         try {
             String suffix = constructTablePath(dbId, tableId);
             FilePathInfo pathInfo = client.allocateFilePath(serviceId, storageVolumeId, suffix);
@@ -284,6 +308,7 @@ public class StarOSAgent {
     }
 
     public long getWorkerTabletNum(String workerIpPort) {
+        prepare();
         try {
             WorkerInfo workerInfo = client.getWorkerInfo(serviceId, workerIpPort);
             return workerInfo.getTabletNum();
@@ -590,30 +615,30 @@ public class StarOSAgent {
         return result;
     }
 
-    public long getPrimaryComputeNodeIdByShard(long shardId) throws UserException {
+    public long getPrimaryComputeNodeIdByShard(long shardId) throws StarRocksException {
         return getPrimaryComputeNodeIdByShard(shardId, DEFAULT_WORKER_GROUP_ID);
     }
 
-    public long getPrimaryComputeNodeIdByShard(long shardId, long workerGroupId) throws UserException {
+    public long getPrimaryComputeNodeIdByShard(long shardId, long workerGroupId) throws StarRocksException {
         Set<Long> backendIds = getAllNodeIdsByShard(shardId, workerGroupId, true);
         if (backendIds.isEmpty()) {
             // If BE stops, routine load task may catch UserException during load plan,
             // and the job state will changed to PAUSED.
             // The job will automatically recover from PAUSED to RUNNING if the error code is REPLICA_FEW_ERR
             // when all BEs become alive.
-            throw new UserException(InternalErrorCode.REPLICA_FEW_ERR,
+            throw new StarRocksException(InternalErrorCode.REPLICA_FEW_ERR,
                     "Failed to get primary backend. shard id: " + shardId);
         }
         return backendIds.iterator().next();
     }
 
     public Set<Long> getAllNodeIdsByShard(long shardId, long workerGroupId, boolean onlyPrimary)
-            throws UserException {
+            throws StarRocksException {
         try {
             ShardInfo shardInfo = getShardInfo(shardId, workerGroupId);
             return getAllNodeIdsByShard(shardInfo, onlyPrimary);
         } catch (StarClientException e) {
-            throw new UserException(e);
+            throw new StarRocksException(e);
         }
     }
 
@@ -684,7 +709,7 @@ public class StarOSAgent {
         return false; // return false if any error happens
     }
 
-    public List<Long> getWorkersByWorkerGroup(long workerGroupId) throws UserException {
+    public List<Long> getWorkersByWorkerGroup(long workerGroupId) throws StarRocksException {
         List<Long> nodeIds = new ArrayList<>();
         prepare();
         try {
@@ -696,11 +721,11 @@ public class StarOSAgent {
             }
             return nodeIds;
         } catch (StarClientException e) {
-            throw new UserException("Failed to get workers by group id. error: " + e.getMessage());
+            throw new StarRocksException("Failed to get workers by group id. error: " + e.getMessage());
         }
     }
 
-    public List<String> listWorkerGroupIpPort(long workerGroupId) throws UserException {
+    public List<String> listWorkerGroupIpPort(long workerGroupId) throws StarRocksException {
         List<String> addresses = new ArrayList<>();
         prepare();
         try {
@@ -713,7 +738,7 @@ public class StarOSAgent {
             }
             return addresses;
         } catch (StarClientException e) {
-            throw new UserException("Fail to get workers by default group id, error: " + e.getMessage());
+            throw new StarRocksException("Fail to get workers by default group id, error: " + e.getMessage());
         }
     }
 
@@ -734,7 +759,7 @@ public class StarOSAgent {
         }
     }
 
-    public long createWorkerGroup(String size) throws DdlException {
+    public long createWorkerGroup(String size, int replicaNumber, String replicationTypeStr) throws DdlException {
         prepare();
 
         // size should be x0, x1, x2, x4...
@@ -743,13 +768,44 @@ public class StarOSAgent {
         String owner = "Starrocks";
         WorkerGroupDetailInfo result = null;
         try {
+            ReplicationType replicationType = ReplicationType.NO_REPLICATION;
+            if (replicationTypeStr == null || replicationTypeStr.equalsIgnoreCase("NONE")) {
+                replicationType = ReplicationType.NO_REPLICATION;
+            } else if (replicationTypeStr.equalsIgnoreCase("SYNC")) {
+                replicationType = ReplicationType.SYNC;
+            } else if (replicationTypeStr.equalsIgnoreCase("ASYNC")) {
+                replicationType = ReplicationType.ASYNC;
+            } else {
+                throw new DdlException("Unknown replication type " + replicationTypeStr);
+            }
             result = client.createWorkerGroup(serviceId, owner, spec, Collections.emptyMap(),
-                    Collections.emptyMap());
+                    Collections.emptyMap(), replicaNumber, replicationType);
         } catch (StarClientException e) {
             LOG.warn("Failed to create worker group. error: {}", e.getMessage());
             throw new DdlException("Failed to create worker group. error: " + e.getMessage());
         }
         return result.getGroupId();
+    }
+
+    public void updateWorkerGroup(long workerGroupId, int replicaNumber, String replicationTypeStr)
+            throws DdlException {
+        prepare();
+        try {
+            ReplicationType replicationType = ReplicationType.NO_REPLICATION;
+            if (replicationTypeStr == null || replicationTypeStr.equalsIgnoreCase("NONE")) {
+                replicationType = ReplicationType.NO_REPLICATION;
+            } else if (replicationTypeStr.equalsIgnoreCase("SYNC")) {
+                replicationType = ReplicationType.SYNC;
+            } else if (replicationTypeStr.equalsIgnoreCase("ASYNC")) {
+                replicationType = ReplicationType.ASYNC;
+            } else {
+                throw new DdlException("Unknown replication type " + replicationTypeStr);
+            }
+            client.updateWorkerGroup(serviceId, workerGroupId, null, null, replicaNumber, replicationType);
+        } catch (StarClientException e) {
+            LOG.warn("Failed to update worker group. error: {}", e.getMessage());
+            throw new DdlException("Failed to update worker group. error: " + e.getMessage());
+        }
     }
 
     public void deleteWorkerGroup(long groupId) throws DdlException {

@@ -26,7 +26,7 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.connector.informationschema.InformationSchemaMetadata;
 import com.starrocks.connector.metadata.MetadataTable;
@@ -88,7 +88,8 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     private ConnectorMetadata metadataOfTable(String tableName) {
-        if (TableMetaMetadata.isMetadataTable(tableName)) {
+        // Paimon system table shares the same pattern, ignore it here
+        if (getTableType() != Table.TableType.PAIMON && TableMetaMetadata.isMetadataTable(tableName)) {
             return tableMetadata;
         }
         return null;
@@ -129,8 +130,8 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public List<String> listPartitionNames(String databaseName, String tableName, TableVersionRange version) {
-        return normal.listPartitionNames(databaseName, tableName, version);
+    public List<String> listPartitionNames(String databaseName, String tableName, ConnectorMetadatRequestContext requestContext) {
+        return normal.listPartitionNames(databaseName, tableName, requestContext);
     }
 
     @Override
@@ -273,7 +274,7 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public void alterTable(ConnectContext context, AlterTableStmt stmt) throws UserException {
+    public void alterTable(ConnectContext context, AlterTableStmt stmt) throws StarRocksException {
         normal.alterTable(context, stmt);
     }
 
@@ -352,7 +353,7 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public void alterView(AlterViewStmt stmt) throws DdlException, UserException {
+    public void alterView(AlterViewStmt stmt) throws DdlException, StarRocksException {
         normal.alterView(stmt);
     }
 

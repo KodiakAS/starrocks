@@ -50,8 +50,8 @@ import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.ThreadPoolManager;
-import com.starrocks.common.UserException;
 import com.starrocks.common.util.KafkaUtil;
 import com.starrocks.common.util.NetUtils;
 import com.starrocks.http.HttpMetricRegistry;
@@ -414,6 +414,15 @@ public final class MetricRepo {
         GAUGE_SAFE_MODE.setValue(0);
         STARROCKS_METRIC_REGISTER.addMetric(GAUGE_SAFE_MODE);
 
+        GaugeMetric<Long> gaugeReportQueueSize = new GaugeMetric<Long>(
+                "report_queue_size", MetricUnit.NOUNIT, "report queue size") {
+            @Override
+            public Long getValue() {
+                return (long) GlobalStateMgr.getCurrentState().getReportHandler().getReportQueueSize();
+            }
+        };
+        STARROCKS_METRIC_REGISTER.addMetric(gaugeReportQueueSize);
+
         // 2. counter
         COUNTER_REQUEST_ALL = new LongCounterMetric("request_total", MetricUnit.REQUESTS, "total request");
         STARROCKS_METRIC_REGISTER.addMetric(COUNTER_REQUEST_ALL);
@@ -727,7 +736,7 @@ public final class MetricRepo {
             List<PKafkaOffsetProxyResult> offsetProxyResults;
             try {
                 offsetProxyResults = KafkaUtil.getBatchOffsets(requests);
-            } catch (UserException e) {
+            } catch (StarRocksException e) {
                 LOG.warn("get batch offsets failed", e);
                 return;
             }

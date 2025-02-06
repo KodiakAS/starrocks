@@ -62,6 +62,9 @@ import com.starrocks.analysis.TableName;
 import com.starrocks.analysis.TimestampArithmeticExpr;
 import com.starrocks.analysis.UserVariableExpr;
 import com.starrocks.analysis.VariableExpr;
+import com.starrocks.authorization.AuthorizationMgr;
+import com.starrocks.authorization.PrivilegeException;
+import com.starrocks.authorization.RolePrivilegeCollectionV2;
 import com.starrocks.catalog.ArrayType;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
@@ -82,9 +85,6 @@ import com.starrocks.catalog.Type;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
-import com.starrocks.privilege.AuthorizationMgr;
-import com.starrocks.privilege.PrivilegeException;
-import com.starrocks.privilege.RolePrivilegeCollectionV2;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SessionVariable;
 import com.starrocks.qe.SqlModeHelper;
@@ -1284,6 +1284,21 @@ public class ExpressionAnalyzer {
 
                     if (!(node.getChild(0) instanceof StringLiteral)) {
                         throw new SemanticException("IS_ROLE_IN_SESSION currently only supports constant parameters");
+                    }
+                    break;
+                }
+                case FunctionSet.ARRAY_FLATTEN: {
+                    if (node.getChildren().size() != 1) {
+                        throw new SemanticException(fnName + " should have only one input", node.getPos());
+                    }
+                    Type inputType = node.getChild(0).getType();
+                    if (!inputType.isArrayType() && !inputType.isNull()) {
+                        throw new SemanticException("The only one input of " + fnName +
+                                " should be an array of arrays, rather than " + inputType.toSql(), node.getPos());
+                    }
+                    if (inputType.isArrayType() && !((ArrayType) inputType).getItemType().isArrayType()) {
+                        throw new SemanticException("The only one input of " + fnName +
+                                " should be an array of arrays, rather than " + inputType.toSql(), node.getPos());
                     }
                     break;
                 }

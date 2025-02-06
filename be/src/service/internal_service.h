@@ -41,7 +41,6 @@
 #include "common/status.h"
 #include "exec/pipeline/pipeline_fwd.h"
 #include "gen_cpp/MVMaintenance_types.h"
-#include "gen_cpp/doris_internal_service.pb.h"
 #include "gen_cpp/internal_service.pb.h"
 #include "util/countdown_latch.h"
 #include "util/priority_thread_pool.hpp"
@@ -185,6 +184,10 @@ public:
 
     void stream_load(google::protobuf::RpcController* controller, const PStreamLoadRequest* request,
                      PStreamLoadResponse* response, google::protobuf::Closure* done) override;
+
+    void update_transaction_state(google::protobuf::RpcController* controller,
+                                  const PUpdateTransactionStateRequest* request,
+                                  PUpdateTransactionStateResponse* response, google::protobuf::Closure* done) override;
 
 private:
     void _transmit_chunk(::google::protobuf::RpcController* controller,

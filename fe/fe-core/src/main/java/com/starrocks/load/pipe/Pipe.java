@@ -27,7 +27,7 @@ import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.LabelAlreadyUsedException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.DateUtils;
 import com.starrocks.common.util.ParseUtil;
 import com.starrocks.common.util.PropertyAnalyzer;
@@ -174,14 +174,16 @@ public class Pipe implements GsonPostProcessable {
                     }
                 }
             }
-            this.properties.put(key, value);
+            if (this.properties != properties) {
+                this.properties.put(key, value);
+            }
         }
     }
 
     /**
      * Poll event from data source
      */
-    public void poll() throws UserException {
+    public void poll() throws StarRocksException {
         long nextPollTime = lastPolledTime + pollIntervalSecond;
         if (System.currentTimeMillis() / 1000 < nextPollTime) {
             return;
@@ -248,7 +250,7 @@ public class Pipe implements GsonPostProcessable {
             if (StringUtils.isEmpty(file.insertLabel)) {
                 file.loadState = FileListRepo.PipeFileState.ERROR;
             } else {
-                TransactionStatus txnStatus = txnMgr.getLabelStatus(dbId, file.insertLabel);
+                TransactionStatus txnStatus = txnMgr.getLabelStatus(dbId, file.insertLabel).getStatus();
                 if (txnStatus == null || txnStatus.isFailed()) {
                     file.loadState = FileListRepo.PipeFileState.ERROR;
                 } else {

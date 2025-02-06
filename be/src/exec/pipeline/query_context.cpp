@@ -110,7 +110,7 @@ void QueryContext::cancel(const Status& status) {
 
 void QueryContext::init_mem_tracker(int64_t query_mem_limit, MemTracker* parent, int64_t big_query_mem_limit,
                                     std::optional<double> spill_mem_reserve_ratio, workgroup::WorkGroup* wg,
-                                    RuntimeState* runtime_state, int scan_node_number) {
+                                    RuntimeState* runtime_state, int connector_scan_node_number) {
     std::call_once(_init_mem_tracker_once, [=]() {
         _profile = std::make_shared<RuntimeProfile>("Query" + print_id(_query_id));
         auto* mem_tracker_counter =
@@ -142,7 +142,7 @@ void QueryContext::init_mem_tracker(int64_t query_mem_limit, MemTracker* parent,
             _static_query_mem_limit = std::min(big_query_mem_limit, _static_query_mem_limit);
         }
         _connector_scan_operator_mem_share_arbitrator = _object_pool.add(
-                new ConnectorScanOperatorMemShareArbitrator(_static_query_mem_limit, scan_node_number));
+                new ConnectorScanOperatorMemShareArbitrator(_static_query_mem_limit, connector_scan_node_number));
 
         {
             MemTracker* connector_scan_parent = GlobalEnv::GetInstance()->connector_scan_pool_mem_tracker();
@@ -158,17 +158,6 @@ void QueryContext::init_mem_tracker(int64_t query_mem_limit, MemTracker* parent,
                     _profile->name() + "/connector_scan", connector_scan_parent);
         }
     });
-}
-
-MemTracker* QueryContext::operator_mem_tracker(int32_t plan_node_id) {
-    std::lock_guard<std::mutex> l(_operator_mem_trackers_lock);
-    auto it = _operator_mem_trackers.find(plan_node_id);
-    if (it != _operator_mem_trackers.end()) {
-        return it->second.get();
-    }
-    auto mem_tracker = std::make_shared<MemTracker>();
-    _operator_mem_trackers[plan_node_id] = mem_tracker;
-    return mem_tracker.get();
 }
 
 Status QueryContext::init_spill_manager(const TQueryOptions& query_options) {
@@ -201,10 +190,20 @@ Status QueryContext::init_query_once(workgroup::WorkGroup* wg, bool enable_group
 void QueryContext::release_workgroup_token_once() {
     auto* old = _wg_running_query_token_atomic_ptr.load();
     if (old != nullptr && _wg_running_query_token_atomic_ptr.compare_exchange_strong(old, nullptr)) {
+        // The release_workgroup_token_once function is called by FragmentContext::cancel
+        // to detach the QueryContext from the workgroup.
+        // When the workgroup undergoes a configuration change, the old version of the workgroup is released,
+        // and a new version is created. The old workgroup will only be physically destroyed once no
+        // QueryContext is attached to it.
+        // However, the MemTracker of the old workgroup outlives the workgroup itself because
+        // it is accessed during the destruction of the QueryContext through its MemTracker
+        // (the workgroup's MemTracker serves as the parent of the QueryContext's MemTracker).
+        // To prevent the MemTracker from being released prematurely, it must be explicitly retained
+        // to ensure it remains valid until it is no longer needed.
+        _wg_mem_tracker = _wg_running_query_token_ptr->get_wg()->grab_mem_tracker();
         _wg_running_query_token_ptr.reset();
     }
 }
-
 void QueryContext::set_query_trace(std::shared_ptr<starrocks::debug::QueryTrace> query_trace) {
     std::call_once(_query_trace_init_flag, [this, &query_trace]() { _query_trace = std::move(query_trace); });
 }
@@ -695,6 +694,18 @@ void QueryContextManager::report_fragments(
     for (const auto& key : fragment_context_non_exist) {
         starrocks::ExecEnv::GetInstance()->profile_report_worker()->unregister_pipeline_load(key.query_id,
                                                                                              key.fragment_instance_id);
+    }
+}
+
+void QueryContextManager::for_each_active_ctx(const std::function<void(QueryContextPtr)>& func) {
+    for (auto i = 0; i < _num_slots; ++i) {
+        auto& mutex = _mutexes[i];
+        std::vector<QueryContextPtr> del_list;
+        std::unique_lock write_lock(mutex);
+        auto& contexts = _context_maps[i];
+        for (auto& [_, context] : contexts) {
+            func(context);
+        }
     }
 }
 

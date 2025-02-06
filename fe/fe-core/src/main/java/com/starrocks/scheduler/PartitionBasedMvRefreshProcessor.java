@@ -18,6 +18,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
+import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Range;
@@ -41,7 +42,7 @@ import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.MaterializedViewExceptions;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.util.DebugUtil;
@@ -88,9 +89,9 @@ import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.sql.plan.ExecPlan;
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.parquet.Strings;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -711,12 +712,14 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
             extraMessage.setNextPartitionValues(mvContext.getNextPartitionValues());
         });
 
-        // Partition refreshing task run should have the HIGHEST priority, and be scheduled before other tasks
+        // Partition refreshing task run should have the HIGHER priority, and be scheduled before other tasks
         // Otherwise this round of partition refreshing would be staved and never got finished
-        ExecuteOption option = new ExecuteOption(Constants.TaskRunPriority.HIGHEST.value(), true, newProperties);
-        LOG.info("[MV] Generate a task to refresh next batches of partitions for MV {}-{}, start={}, end={}",
-                materializedView.getName(), materializedView.getId(),
-                mvContext.getNextPartitionStart(), mvContext.getNextPartitionEnd());
+        int priority = mvContext.executeOption.getPriority() > Constants.TaskRunPriority.LOWEST.value() ?
+                mvContext.executeOption.getPriority() : Constants.TaskRunPriority.HIGHER.value();
+        ExecuteOption option = new ExecuteOption(priority, true, newProperties);
+        LOG.info("[MV] Generate a task to refresh next batches of partitions for MV {}-{}, start={}, end={}, " +
+                        "priority={}", materializedView.getName(), materializedView.getId(),
+                mvContext.getNextPartitionStart(), mvContext.getNextPartitionEnd(), priority);
 
         if (properties.containsKey(TaskRun.IS_TEST) && properties.get(TaskRun.IS_TEST).equalsIgnoreCase("true")) {
             // for testing
@@ -1009,8 +1012,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
             throws AnalysisException {
         if (mvRefreshParams.isForceCompleteRefresh()) {
             // Force refresh
-            int partitionTTLNumber = mvContext.getPartitionTTLNumber();
-            return mvRefreshPartitioner.getMVPartitionsToRefreshWithForce(partitionTTLNumber);
+            return mvRefreshPartitioner.getMVPartitionsToRefreshWithForce();
         } else {
             return mvRefreshPartitioner.getMVPartitionsToRefresh(mvPartitionInfo, snapshotBaseTables,
                     mvRefreshParams, mvPotentialPartitionNames);
@@ -1033,7 +1035,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
         // may be different from the defined query's output.
         // so set materialized view's defined outputs as target columns.
         List<Integer> queryOutputIndexes = materializedView.getQueryOutputIndices();
-        List<Column> baseSchema = materializedView.getBaseSchema();
+        List<Column> baseSchema = materializedView.getBaseSchemaWithoutGeneratedColumn();
         if (queryOutputIndexes != null && baseSchema.size() == queryOutputIndexes.size()) {
             List<String> targetColumnNames = queryOutputIndexes.stream()
                     .map(baseSchema::get)
@@ -1121,7 +1123,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
                     }
                 }
             }
-        } catch (UserException e) {
+        } catch (StarRocksException e) {
             LOG.warn("Materialized view compute partition change failed", DebugUtil.getRootStackTrace(e));
             return true;
         }
@@ -1162,10 +1164,10 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
         if (mvContext.getTaskRun().isKilled()) {
             LOG.warn("[QueryId:{}] refresh materialized view {} is killed", ctx.getQueryId(),
                     materializedView.getName());
-            throw new UserException("User Cancelled");
+            throw new StarRocksException("User Cancelled");
         }
 
-        StmtExecutor executor = new StmtExecutor(ctx, insertStmt);
+        StmtExecutor executor = StmtExecutor.newInternalExecutor(ctx, insertStmt);
         ctx.setExecutor(executor);
         if (ctx.getParent() != null && ctx.getParent().getExecutor() != null) {
             StmtExecutor parentStmtExecutor = ctx.getParent().getExecutor();
@@ -1311,7 +1313,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
     public Map<TableSnapshotInfo, Set<String>> getRefTableRefreshPartitions(Set<String> mvToRefreshedPartitions) {
         Map<TableSnapshotInfo, Set<String>> refTableAndPartitionNames = Maps.newHashMap();
         Map<String, Map<Table, Set<String>>> mvToBaseNameRefs = mvContext.getMvRefBaseTableIntersectedPartitions();
-        if (mvToBaseNameRefs == null) {
+        if (mvToBaseNameRefs == null || mvToBaseNameRefs.isEmpty()) {
             return refTableAndPartitionNames;
         }
         for (TableSnapshotInfo snapshotInfo : snapshotBaseTables.values()) {
@@ -1447,5 +1449,29 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
     @VisibleForTesting
     public Map<Long, TableSnapshotInfo> getSnapshotBaseTables() {
         return snapshotBaseTables;
+    }
+
+    private String getPostRun(ConnectContext ctx, MaterializedView mv) {
+        // check whether it's enabled to analyze MV task after task run for each task run,
+        // so the analyze_for_mv can be set in session variable dynamically
+        if (mv == null) {
+            return "";
+        }
+        return TaskBuilder.getAnalyzeMVStmt(ctx, mv.getName());
+    }
+
+    @Override
+    public void postTaskRun(TaskRunContext context) throws Exception {
+        // recreate post run context for each task run
+        final ConnectContext ctx = context.getCtx();
+        final String postRun = getPostRun(ctx, materializedView);
+        // visible for tests
+        if (mvContext != null) {
+            mvContext.setPostRun(postRun);
+        }
+        context.setPostRun(postRun);
+        if (StringUtils.isNotEmpty(postRun)) {
+            ctx.executeSql(postRun);
+        }
     }
 }

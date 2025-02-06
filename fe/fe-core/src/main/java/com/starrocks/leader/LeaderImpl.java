@@ -75,7 +75,7 @@ import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.NotImplementedException;
 import com.starrocks.common.Pair;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.concurrent.lock.LockTimeoutException;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
@@ -83,7 +83,6 @@ import com.starrocks.lake.LakeTablet;
 import com.starrocks.load.DeleteJob;
 import com.starrocks.load.OlapDeleteJob;
 import com.starrocks.load.loadv2.SparkLoadJob;
-import com.starrocks.memory.MemoryUsageTracker;
 import com.starrocks.rpc.ThriftConnectionPool;
 import com.starrocks.rpc.ThriftRPCRequestExecutor;
 import com.starrocks.server.GlobalStateMgr;
@@ -174,13 +173,6 @@ import static com.starrocks.catalog.Replica.ReplicaState.NORMAL;
 
 public class LeaderImpl {
     private static final Logger LOG = LogManager.getLogger(LeaderImpl.class);
-
-    private final ReportHandler reportHandler = new ReportHandler();
-
-    public LeaderImpl() {
-        reportHandler.start();
-        MemoryUsageTracker.registerMemoryTracker("Report", reportHandler);
-    }
 
     public TMasterResult finishTask(TFinishTaskRequest request) {
         // if current node is not master, reject the request
@@ -873,7 +865,7 @@ public class LeaderImpl {
             result.setStatus(status);
             return result;
         }
-        return reportHandler.handleReport(request);
+        return GlobalStateMgr.getCurrentState().getReportHandler().handleReport(request);
     }
 
     private void finishAlterTask(AgentTask task) {
@@ -1311,7 +1303,7 @@ public class LeaderImpl {
                 response.setStatus(status);
                 return response;
             }
-        } catch (UserException e) {
+        } catch (StarRocksException e) {
             LOG.warn("commit remote txn failed, txn_id: {}", request.getTxn_id(), e);
             TStatus status = new TStatus(TStatusCode.INTERNAL_ERROR);
             status.setError_msgs(Lists.newArrayList(e.getMessage()));

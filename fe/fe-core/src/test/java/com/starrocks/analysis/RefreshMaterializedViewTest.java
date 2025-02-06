@@ -29,8 +29,6 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.clone.DynamicPartitionScheduler;
-import com.starrocks.metric.MaterializedViewMetricsEntity;
-import com.starrocks.metric.MaterializedViewMetricsRegistry;
 import com.starrocks.qe.StmtExecutor;
 import com.starrocks.schema.MTable;
 import com.starrocks.server.GlobalStateMgr;
@@ -41,7 +39,7 @@ import com.starrocks.sql.ast.InsertStmt;
 import com.starrocks.sql.ast.RefreshMaterializedViewStatement;
 import com.starrocks.sql.ast.TruncateTableStmt;
 import com.starrocks.sql.common.PListCell;
-import com.starrocks.sql.optimizer.rule.transformation.materialization.MvRewriteTestBase;
+import com.starrocks.sql.optimizer.rule.transformation.materialization.MVTestBase;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.utframe.UtFrameUtils;
 import mockit.Mock;
@@ -60,13 +58,13 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-public class RefreshMaterializedViewTest extends MvRewriteTestBase {
+public class RefreshMaterializedViewTest extends MVTestBase {
     // 1hour: set it to 1 hour to avoid FE's async update too late.
     private static final long MV_STALENESS = 60 * 60;
 
     @BeforeClass
     public static void beforeClass() throws Exception {
-        MvRewriteTestBase.beforeClass();
+        MVTestBase.beforeClass();
         starRocksAssert.useDatabase("test")
                 .withTable("CREATE TABLE test.tbl_with_mv\n" +
                         "(\n" +
@@ -107,7 +105,7 @@ public class RefreshMaterializedViewTest extends MvRewriteTestBase {
     }
 
     @Test
-    public void testCreateMVProperties() throws Exception {
+    public void testCreateMVProperties1() throws Exception {
         starRocksAssert
                 .withTable("CREATE TABLE t1 \n" +
                         "(\n" +
@@ -149,6 +147,54 @@ public class RefreshMaterializedViewTest extends MvRewriteTestBase {
             starRocksAssert.dropMaterializedView("mv1");
         });
     }
+
+    @Test
+    public void testCreateMVProperties2() throws Exception {
+        starRocksAssert
+                .withTable("CREATE TABLE t1 \n" +
+                        "(\n" +
+                        "    k1 date,\n" +
+                        "    k2 int,\n" +
+                        "    v1 int\n" +
+                        ")\n" +
+                        "PARTITION BY date_trunc('day', k1)\n" +
+                        "DISTRIBUTED BY HASH(k2) BUCKETS 3\n" +
+                        "PROPERTIES('replication_num' = '1');")
+                .withTable("CREATE TABLE t2 \n" +
+                        "(\n" +
+                        "    k1 date,\n" +
+                        "    k2 int,\n" +
+                        "    v1 int\n" +
+                        ")\n" +
+                        "PARTITION BY date_trunc('day', k1)\n" +
+                        "DISTRIBUTED BY HASH(k2) BUCKETS 3\n" +
+                        "PROPERTIES('replication_num' = '1');");
+        withRefreshedMV("CREATE MATERIALIZED VIEW mv1 \n" +
+                "PARTITION BY date_trunc('day', k1)\n"
+                + "DISTRIBUTED BY RANDOM\n" +
+                "REFRESH ASYNC\n" +
+                "AS \n" +
+                "select k1 from (SELECT * FROM t1 UNION ALL SELECT * FROM t2) t group by k1\n", () -> {
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("test");
+            MaterializedView mv =
+                    (MaterializedView) GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getFullName(), "mv1");
+            Assert.assertTrue(mv.shouldRefreshTable("t1"));
+            Assert.assertTrue(mv.shouldRefreshTable("t2"));
+
+            String alterSql = "ALTER MATERIALIZED VIEW mv1 SET ('excluded_refresh_tables' = 't2')";
+            AlterMaterializedViewStmt stmt =
+                    (AlterMaterializedViewStmt) UtFrameUtils.parseStmtWithNewParser(alterSql, connectContext);
+            GlobalStateMgr.getCurrentState().getLocalMetastore().alterMaterializedView(stmt);
+            Assert.assertTrue(mv.shouldRefreshTable("t1"));
+            Assert.assertFalse(mv.shouldRefreshTable("t2"));
+
+            // cleanup
+            starRocksAssert.dropTable("t1");
+            starRocksAssert.dropTable("t2");
+            starRocksAssert.dropMaterializedView("mv1");
+        });
+    }
+
 
     @Test
     public void testNormal() throws Exception {
@@ -1199,15 +1245,14 @@ public class RefreshMaterializedViewTest extends MvRewriteTestBase {
                     {
                         String sql = "REFRESH MATERIALIZED VIEW test_mv1 PARTITION (('20240101', 'beijing'), ('20240101', " +
                                 "'nanjing')) FORCE;";
-                        RefreshMaterializedViewStatement statement =
-                                (RefreshMaterializedViewStatement) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
-                        Assert.assertTrue(statement.isForceRefresh());
-                        Assert.assertNull(statement.getPartitionRangeDesc());
-                        Set<PListCell> expect = ImmutableSet.of(
-                                new PListCell(ImmutableList.of(ImmutableList.of("20240101", "beijing"))),
-                                new PListCell(ImmutableList.of(ImmutableList.of("20240101", "nanjing")))
-                        );
-                        Assert.assertEquals(expect, statement.getPartitionListDesc());
+                        try {
+                            RefreshMaterializedViewStatement statement =
+                                    (RefreshMaterializedViewStatement) UtFrameUtils.parseStmtWithNewParser(sql, connectContext);
+                            Assert.fail();
+                        } catch (Exception e) {
+                           Assert.assertTrue(e.getMessage().contains("Partition column size 1 is not match with input partition"
+                                   + " value's size 2"));
+                        }
                     }
                 });
     }
@@ -1217,39 +1262,32 @@ public class RefreshMaterializedViewTest extends MvRewriteTestBase {
         starRocksAssert
                 .createDatabaseIfNotExists("trunc_db")
                 .useDatabase("trunc_db")
-                .withTable("CREATE TABLE t1 \n" +
+                .withTable("CREATE TABLE trunc_db_t1 \n" +
                         "(\n" +
                         "    k1 int,\n" +
                         "    v1 int\n" +
                         ")\n" +
                         "PROPERTIES('replication_num' = '1');");
-
         starRocksAssert.createDatabaseIfNotExists("mv_db")
                 .useDatabase("mv_db")
                 .withMaterializedView("CREATE MATERIALIZED VIEW test_mv\n"
                         + "DISTRIBUTED BY HASH(`k1`)\n"
-                        + "REFRESH ASYNC\n"
-                        + "AS SELECT k1 from trunc_db.t1;");
+                        + "REFRESH DEFERRED ASYNC\n"
+                        + "AS SELECT k1 from trunc_db.trunc_db_t1;");
 
-        executeInsertSql(connectContext, "insert into trunc_db.t1 values(2, 10)");
+        executeInsertSql(connectContext, "insert into trunc_db.trunc_db_t1 values(2, 10)");
         MaterializedView mv1 = getMv("mv_db", "test_mv");
-        MaterializedViewMetricsEntity mvEntity =
-                (MaterializedViewMetricsEntity) MaterializedViewMetricsRegistry.getInstance().getMetricsEntity(mv1.getMvId());
-        long count = mvEntity.histRefreshJobDuration.getCount();
-        Assert.assertEquals(0, count);
 
-        Table table = getTable("trunc_db", "t1");
+        Table table = getTable("trunc_db", "trunc_db_t1");
         // Simulate writing to a non-existent MV
         table.addRelatedMaterializedView(new MvId(1,1));
-        String truncateStr = "truncate table trunc_db.t1;";
+        String truncateStr = "truncate table trunc_db.trunc_db_t1;";
         TruncateTableStmt truncateTableStmt = (TruncateTableStmt) UtFrameUtils.parseStmtWithNewParser(truncateStr, connectContext);
         GlobalStateMgr.getCurrentState().getLocalMetastore().truncateTable(truncateTableStmt, connectContext);
-        starRocksAssert.waitRefreshFinished(mv1.getId());
+        Assert.assertTrue(starRocksAssert.waitRefreshFinished(mv1.getId()));
 
-        mvEntity =
-                (MaterializedViewMetricsEntity) MaterializedViewMetricsRegistry.getInstance().getMetricsEntity(mv1.getMvId());
-        count = mvEntity.histRefreshJobDuration.getCount();
-        Assert.assertEquals(1, count);
+        starRocksAssert.dropTable("trunc_db.trunc_db_t1");
+        starRocksAssert.dropMaterializedView("mv_db.test_mv");
     }
 
     @Test
@@ -1275,26 +1313,19 @@ public class RefreshMaterializedViewTest extends MvRewriteTestBase {
                 .useDatabase("drop_mv_db")
                 .withMaterializedView("CREATE MATERIALIZED VIEW test_mv\n"
                         + "DISTRIBUTED BY HASH(`k2`)\n"
-                        + "REFRESH ASYNC\n"
+                        + "REFRESH DEFERRED ASYNC\n"
                         + "AS select k1, k2, v1  from drop_db.tbl_with_mv;");
 
         executeInsertSql(connectContext, "insert into drop_db.tbl_with_mv partition(p2) values(\"2022-02-20\", 2, 10)");
         MaterializedView mv1 = getMv("drop_mv_db", "test_mv");
-        MaterializedViewMetricsEntity mvEntity =
-                (MaterializedViewMetricsEntity) MaterializedViewMetricsRegistry.getInstance().getMetricsEntity(mv1.getMvId());
-        long count = mvEntity.histRefreshJobDuration.getCount();
-        Assert.assertEquals(0, count);
-
         OlapTable table = (OlapTable) getTable("drop_db", "tbl_with_mv");
         Partition p1 = table.getPartition("p1");
         DropPartitionClause dropPartitionClause = new DropPartitionClause(false, p1.getName(), false, true);
         dropPartitionClause.setResolvedPartitionNames(ImmutableList.of(p1.getName()));
         Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb("drop_db");
         GlobalStateMgr.getCurrentState().getLocalMetastore().dropPartition(db, table, dropPartitionClause);
-        starRocksAssert.waitRefreshFinished(mv1.getId());
-        mvEntity =
-                (MaterializedViewMetricsEntity) MaterializedViewMetricsRegistry.getInstance().getMetricsEntity(mv1.getMvId());
-        count = mvEntity.histRefreshJobDuration.getCount();
-        Assert.assertEquals(1, count);
+        Assert.assertTrue(starRocksAssert.waitRefreshFinished(mv1.getId()));
+        starRocksAssert.dropTable("drop_db.tbl_with_mv");
+        starRocksAssert.dropMaterializedView("drop_mv_db.test_mv");
     }
 }

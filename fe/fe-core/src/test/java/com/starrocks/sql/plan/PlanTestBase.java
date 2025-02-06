@@ -14,22 +14,18 @@
 
 package com.starrocks.sql.plan;
 
-import com.starrocks.catalog.Database;
-import com.starrocks.catalog.MaterializedView;
 import com.starrocks.common.FeConstants;
 import com.starrocks.planner.TpchSQL;
 import com.starrocks.qe.DefaultCoordinator;
 import com.starrocks.qe.scheduler.dag.FragmentInstance;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TScanRangeParams;
-import com.starrocks.utframe.StarRocksAssert;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections4.ListUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -138,6 +134,26 @@ public class PlanTestBase extends PlanTestNoneDBBase {
                 ") ENGINE=OLAP\n" +
                 "DUPLICATE KEY(`v1`, `v2`, v3)\n" +
                 "DISTRIBUTED BY HASH(`v1`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
+        starRocksAssert.withTable("CREATE TABLE `t7` (\n" +
+                "  `k1` string NULL COMMENT \"\",\n" +
+                "  `k2` string NULL COMMENT \"\",\n" +
+                "  `k3` string NULL\n" +
+                ") ENGINE=OLAP\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"in_memory\" = \"false\"\n" +
+                ");");
+
+        starRocksAssert.withTable("CREATE TABLE `t8` (\n" +
+                "  `k1` string NULL COMMENT \"\",\n" +
+                "  `k2` string NULL COMMENT \"\",\n" +
+                "  `k3` string NULL\n" +
+                ") ENGINE=OLAP\n" +
                 "PROPERTIES (\n" +
                 "\"replication_num\" = \"1\",\n" +
                 "\"in_memory\" = \"false\"\n" +
@@ -976,21 +992,16 @@ public class PlanTestBase extends PlanTestNoneDBBase {
         connectContext.getSessionVariable().setCboPushDownGroupingSet(true);
     }
 
-    public static void cleanupEphemeralMVs(StarRocksAssert starRocksAssert, long startTime) throws Exception {
-        String currentDb = starRocksAssert.getCtx().getDatabase();
-        if (StringUtils.isNotEmpty(currentDb)) {
-            Database testDb = GlobalStateMgr.getCurrentState().getLocalMetastore().getDb(currentDb);
-            for (MaterializedView mv : ListUtils.emptyIfNull(testDb.getMaterializedViews())) {
-                if (startTime > 0 && mv.getCreateTime() > startTime) {
-                    starRocksAssert.dropMaterializedView(mv.getName());
-                    LOG.warn("cleanup mv after test case: {}", mv.getName());
-                }
-            }
-            if (CollectionUtils.isNotEmpty(testDb.getMaterializedViews())) {
-                LOG.warn("database [{}] still contains {} materialized views",
-                        testDb.getFullName(), testDb.getMaterializedViews().size());
-            }
-        }
+    // NOTE: for JUnit 5
+    @BeforeAll
+    public static void beforeAll() throws Exception {
+        beforeClass();
+    }
+
+    // NOTE: for JUnit 5
+    @AfterAll
+    public static void afterAll() throws Exception {
+        afterClass();
     }
 
     public static List<TScanRangeParams> collectAllScanRangeParams(DefaultCoordinator coordinator) {

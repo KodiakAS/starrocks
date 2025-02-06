@@ -47,7 +47,7 @@ using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::chrono::duration_cast;
 
-class ConnectorScanOperatorMemShareArbitrator;
+struct ConnectorScanOperatorMemShareArbitrator;
 
 // The context for all fragment of one query in one BE
 class QueryContext : public std::enable_shared_from_this<QueryContext> {
@@ -164,11 +164,9 @@ public:
     /// that there is a big query memory limit of this resource group.
     void init_mem_tracker(int64_t query_mem_limit, MemTracker* parent, int64_t big_query_mem_limit = -1,
                           std::optional<double> spill_mem_limit = std::nullopt, workgroup::WorkGroup* wg = nullptr,
-                          RuntimeState* state = nullptr, int scan_node_number = 1);
+                          RuntimeState* state = nullptr, int connector_scan_node_number = 1);
     std::shared_ptr<MemTracker> mem_tracker() { return _mem_tracker; }
     MemTracker* connector_scan_mem_tracker() { return _connector_scan_mem_tracker.get(); }
-
-    MemTracker* operator_mem_tracker(int32_t plan_node_id);
 
     Status init_spill_manager(const TQueryOptions& query_options);
     Status init_query_once(workgroup::WorkGroup* wg, bool enable_group_level_query_queue);
@@ -307,10 +305,6 @@ private:
     int64_t _big_query_profile_threshold_ns = 0;
     int64_t _runtime_profile_report_interval_ns = std::numeric_limits<int64_t>::max();
     TPipelineProfileLevel::type _profile_level;
-    std::shared_ptr<MemTracker> _mem_tracker;
-    std::shared_ptr<MemTracker> _connector_scan_mem_tracker;
-    std::mutex _operator_mem_trackers_lock;
-    std::unordered_map<int32_t, std::shared_ptr<MemTracker>> _operator_mem_trackers;
     ObjectPool _object_pool;
     DescriptorTbl* _desc_tbl = nullptr;
     std::once_flag _query_trace_init_flag;
@@ -358,8 +352,14 @@ private:
     std::shared_ptr<QueryStatisticsRecvr> _sub_plan_query_statistics_recvr; // For receive
 
     int64_t _scan_limit = 0;
+    // _wg_mem_tracker is used to grab mem_tracker in workgroup to prevent it from
+    // being released prematurely in FragmentContext::cancel, otherwise accessing
+    // workgroup's mem_tracker in QueryContext's dtor shall cause segmentation fault.
+    std::shared_ptr<MemTracker> _wg_mem_tracker = nullptr;
     workgroup::RunningQueryTokenPtr _wg_running_query_token_ptr;
     std::atomic<workgroup::RunningQueryToken*> _wg_running_query_token_atomic_ptr = nullptr;
+    std::shared_ptr<MemTracker> _mem_tracker;
+    std::shared_ptr<MemTracker> _connector_scan_mem_tracker;
 
     // STREAM MV
     std::shared_ptr<StreamEpochManager> _stream_epoch_manager;
@@ -393,6 +393,7 @@ public:
 
     void collect_query_statistics(const PCollectQueryStatisticsRequest* request,
                                   PCollectQueryStatisticsResult* response);
+    void for_each_active_ctx(const std::function<void(QueryContextPtr)>& func);
 
 private:
     static void _clean_func(QueryContextManager* manager);

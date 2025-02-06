@@ -17,9 +17,11 @@ package com.starrocks.sql.plan;
 import com.starrocks.catalog.ColumnId;
 import com.starrocks.common.FeConstants;
 import com.starrocks.planner.OlapScanNode;
+import com.starrocks.sql.optimizer.rule.tree.lowcardinality.DecodeCollector;
 import com.starrocks.sql.optimizer.statistics.IDictManager;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.utframe.StarRocksAssert;
+import com.starrocks.utframe.UtFrameUtils;
 import mockit.Expectations;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -303,6 +305,15 @@ public class LowCardinalityTest2 extends PlanTestBase {
     }
 
     @Test
+    public void testDecodeNodeRewriteLength() throws Exception {
+        String sql = "select length(dept_name), char_length(dept_name) from dept group by dept_name,state";
+        String plan = getFragmentPlan(sql);
+        Assert.assertTrue(plan, plan.contains("  2:Project\n" +
+                "  |  <slot 4> : DictDecode(6: dept_name, [length(<place-holder>)])\n" +
+                "  |  <slot 5> : DictDecode(6: dept_name, [char_length(<place-holder>)])"));
+    }
+
+    @Test
     public void testDecodeNodeRewrite5() throws Exception {
         String sql = "select S_ADDRESS from supplier where S_ADDRESS " +
                 "like '%Customer%Complaints%' group by S_ADDRESS ";
@@ -356,6 +367,43 @@ public class LowCardinalityTest2 extends PlanTestBase {
             connectContext.getSessionVariable().setEnableLowCardinalityOptimize(enableLowCardinalityOptimize);
             connectContext.getSessionVariable().setNewPlanerAggStage(newPlannerAggStage);
         }
+    }
+
+    @Test
+    public void testIdentifyBlocking() throws Exception {
+        String sql = "select * from low_card_t1 order by 1";
+        boolean hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
+        sql = "select sum(cpc) from low_card_t1";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
+        sql = "(select sum(cpc) from low_card_t1) union all (select sum(cpc) from low_card_t2)";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertFalse(hasBlockingNode);
+        sql = "(select sum(cpc) from low_card_t1) union all (select sum(cpc) from low_card_t2) order by 1";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
+        sql = "select sum(ss) from " +
+                "((select sum(cpc) as ss from low_card_t1) union all (select sum(cpc) as ss from low_card_t2)) x";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
+        sql = "select * from low_card_t1 a join low_card_t2 b on a.cpc = b.cpc";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertFalse(hasBlockingNode);
+        sql = "select * from low_card_t1 a join low_card_t2 b on a.cpc = b.cpc order by 1";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
+        sql = "select sum(a.cpc) from low_card_t1 a join low_card_t2 b on a.cpc = b.cpc order by 1";
+        hasBlockingNode = new DecodeCollector.CheckBlockingNode().check(
+                UtFrameUtils.getPlanAndFragment(connectContext, sql).second.getPhysicalPlan());
+        Assert.assertTrue(hasBlockingNode);
     }
 
     @Test
@@ -932,15 +980,15 @@ public class LowCardinalityTest2 extends PlanTestBase {
         // Test multi input Expression with DictColumn
         sql = "select count(*) from supplier where if(S_ADDRESS = 'kks',cast(S_COMMENT as boolean), false)";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan, plan.contains(
-                "PREDICATES: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), " +
-                        "DictDecode(13: S_COMMENT, [CAST(<place-holder> AS BOOLEAN)]), FALSE)"));
+        assertContains(plan,
+                "predicates: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), " +
+                        "DictDecode(13: S_COMMENT, [CAST(<place-holder> AS BOOLEAN)]), FALSE)");
 
         // Test multi input Expression with No-String Column
         sql = "select count(*) from supplier where if(S_ADDRESS = 'kks',cast(S_NAME as boolean), false)";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan, plan.contains(
-                "PREDICATES: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), CAST(2: S_NAME AS BOOLEAN), FALSE)"));
+        assertContains(plan,
+                "predicates: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), CAST(2: S_NAME AS BOOLEAN), FALSE)");
 
         // Test Two input column. one could apply the other couldn't apply
         // The first expression that can accept a full rewrite. the second couldn't apply
@@ -954,9 +1002,14 @@ public class LowCardinalityTest2 extends PlanTestBase {
         sql = "select count(*) from supplier where if(S_ADDRESS = 'kks',cast(S_COMMENT as boolean), false) " +
                 "and S_COMMENT not like '%kks%'";
         plan = getFragmentPlan(sql);
-        Assert.assertTrue(plan, plan.contains("PREDICATES: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), " +
-                "DictDecode(13: S_COMMENT, [CAST(<place-holder> AS BOOLEAN)]), FALSE), " +
-                "DictDecode(13: S_COMMENT, [NOT (<place-holder> LIKE '%kks%')])"));
+        assertContains(plan, "  1:SELECT\n" +
+                "  |  predicates: if(DictDecode(12: S_ADDRESS, [<place-holder> = 'kks']), " +
+                "DictDecode(13: S_COMMENT, [CAST(<place-holder> AS BOOLEAN)]), FALSE)\n" +
+                "  |  \n" +
+                "  0:OlapScanNode\n" +
+                "     TABLE: supplier\n" +
+                "     PREAGGREGATION: ON\n" +
+                "     PREDICATES: DictDecode(13: S_COMMENT, [NOT (<place-holder> LIKE '%kks%')])");
 
     }
 

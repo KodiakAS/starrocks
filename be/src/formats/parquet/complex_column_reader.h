@@ -28,6 +28,8 @@ public:
 
     Status read_range(const Range<uint64_t>& range, const Filter* filter, ColumnPtr& dst) override;
 
+    Status fill_dst_column(ColumnPtr& dst, ColumnPtr& src) override;
+
     void get_levels(level_t** def_levels, level_t** rep_levels, size_t* num_levels) override {
         _element_reader->get_levels(def_levels, rep_levels, num_levels);
     }
@@ -44,6 +46,8 @@ public:
     void select_offset_index(const SparseRange<uint64_t>& range, const uint64_t rg_first_row) override {
         _element_reader->select_offset_index(range, rg_first_row);
     }
+
+    ColumnReaderPtr& get_element_reader() { return _element_reader; }
 
 private:
     std::unique_ptr<ColumnReader> _element_reader;
@@ -210,7 +214,26 @@ public:
         }
     }
 
+    StatusOr<bool> row_group_zone_map_filter(const std::vector<const ColumnPredicate*>& predicates,
+                                             CompoundNodeType pred_relation, const uint64_t rg_first_row,
+                                             const uint64_t rg_num_rows) const override;
+
+    StatusOr<bool> page_index_zone_map_filter(const std::vector<const ColumnPredicate*>& predicates,
+                                              SparseRange<uint64_t>* row_ranges, CompoundNodeType pred_relation,
+                                              const uint64_t rg_first_row, const uint64_t rg_num_rows) override;
+
+    ColumnReader* get_child_column_reader(const std::string& subfield) const;
+
+    // retrieve multi level subfield's ColumnReader
+    ColumnReader* get_child_column_reader(const std::vector<std::string>& subfields) const;
+
 private:
+    Status _rewrite_column_expr_predicate(ObjectPool* pool, const std::vector<const ColumnPredicate*>& src_preds,
+                                          std::vector<const ColumnPredicate*>& dst_preds) const;
+
+    StatusOr<ColumnPredicate*> _try_to_rewrite_subfield_expr(ObjectPool* pool, const ColumnPredicate* predicate,
+                                                             std::vector<std::string>* subfield_output) const;
+
     void _handle_null_rows(uint8_t* is_nulls, bool* has_null, size_t num_rows);
 
     // _children_readers order is the same as TypeDescriptor children order.

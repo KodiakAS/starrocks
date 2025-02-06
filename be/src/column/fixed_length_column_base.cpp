@@ -19,8 +19,8 @@
 #include "column/vectorized_fwd.h"
 #include "exec/sorting/sort_helper.h"
 #include "gutil/casts.h"
-#include "runtime/large_int_value.h"
 #include "storage/decimal12.h"
+#include "types/large_int_value.h"
 #include "util/hash_util.hpp"
 #include "util/mysql_row_buffer.h"
 #include "util/value_generator.h"
@@ -62,7 +62,7 @@ void FixedLengthColumnBase<T>::append_value_multiple_times(const Column& src, ui
 
 //TODO(fzh): optimize copy using SIMD
 template <typename T>
-ColumnPtr FixedLengthColumnBase<T>::replicate(const Buffer<uint32_t>& offsets) {
+StatusOr<ColumnPtr> FixedLengthColumnBase<T>::replicate(const Buffer<uint32_t>& offsets) {
     auto dest = this->clone_empty();
     auto& dest_data = down_cast<FixedLengthColumnBase<T>&>(*dest);
     dest_data._data.resize(offsets.back());

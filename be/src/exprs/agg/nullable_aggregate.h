@@ -101,6 +101,8 @@ class NullableAggregateFunctionBase : public AggregateFunctionStateHelper<State>
     static constexpr bool is_result_always_nullable = !std::is_same_v<AggNullPred, AggNonNullPred<NestedState>>;
 
 public:
+    bool is_exception_safe() const override { return nested_function->is_exception_safe(); }
+
     explicit NullableAggregateFunctionBase(NestedAggregateFunctionPtr nested_function_,
                                            AggNullPred null_pred = AggNullPred())
             : nested_function(std::move(nested_function_)), null_pred(std::move(null_pred)) {}
@@ -628,7 +630,8 @@ public:
     void update_state_removable_cumulatively(FunctionContext* ctx, AggDataPtr __restrict state, const Column** columns,
                                              int64_t current_row_position, int64_t partition_start,
                                              int64_t partition_end, int64_t rows_start_offset, int64_t rows_end_offset,
-                                             bool ignore_subtraction, bool ignore_addition) const override {
+                                             bool ignore_subtraction, bool ignore_addition,
+                                             [[maybe_unused]] bool has_null) const override {
         if constexpr (IsWindowFunc) {
             DCHECK(!ignore_subtraction);
             DCHECK(!ignore_addition);
@@ -656,7 +659,7 @@ public:
                         this->nested_function->update_state_removable_cumulatively(
                                 ctx, this->data(state).mutable_nest_state(), &data_column, current_row_position,
                                 partition_start, partition_end, rows_start_offset, rows_end_offset, ignore_subtraction,
-                                ignore_addition);
+                                ignore_addition, false);
                     } else {
                         // Build the frame for the first time
                         this->nested_function->update_batch_single_state_with_frame(
@@ -684,10 +687,11 @@ public:
                         is_current_frame_end_null = true;
                         this->data(state).null_count++;
                     }
+                    const Column* columns[2]{data_column, column->immutable_null_column()};
                     this->nested_function->update_state_removable_cumulatively(
-                            ctx, this->data(state).mutable_nest_state(), &data_column, current_row_position,
-                            partition_start, partition_end, rows_start_offset, rows_end_offset,
-                            is_previous_frame_start_null, is_current_frame_end_null);
+                            ctx, this->data(state).mutable_nest_state(), columns, current_row_position, partition_start,
+                            partition_end, rows_start_offset, rows_end_offset, is_previous_frame_start_null,
+                            is_current_frame_end_null, true);
                     if (frame_size != this->data(state).null_count) {
                         this->data(state).is_null = false;
                     }
@@ -708,7 +712,7 @@ public:
                 this->data(state).is_null = false;
                 this->nested_function->update_state_removable_cumulatively(
                         ctx, this->data(state).mutable_nest_state(), columns, current_row_position, partition_start,
-                        partition_end, rows_start_offset, rows_end_offset, ignore_subtraction, ignore_addition);
+                        partition_end, rows_start_offset, rows_end_offset, ignore_subtraction, ignore_addition, false);
             }
         }
     }

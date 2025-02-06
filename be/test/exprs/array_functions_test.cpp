@@ -162,16 +162,11 @@ TEST_F(ArrayFunctionsTest, array_length) {
         auto result = ArrayFunctions::array_length(nullptr, {c}).value();
         EXPECT_EQ(5, result->size());
 
-        ASSERT_FALSE(result->get(0).is_null());
-        ASSERT_TRUE(result->get(1).is_null());
-        ASSERT_FALSE(result->get(2).is_null());
-        ASSERT_FALSE(result->get(3).is_null());
-        ASSERT_FALSE(result->get(4).is_null());
-
-        EXPECT_EQ(0, result->get(0).get_int32());
-        EXPECT_EQ(1, result->get(2).get_int32());
-        EXPECT_EQ(1, result->get(3).get_int32());
-        EXPECT_EQ(2, result->get(4).get_int32());
+        EXPECT_EQ(result->get(0), Datum(0));
+        EXPECT_EQ(result->get(1), kNullDatum);
+        EXPECT_EQ(result->get(2), Datum(1));
+        EXPECT_EQ(result->get(3), Datum(1));
+        EXPECT_EQ(result->get(4), Datum(2));
     }
 
     // []
@@ -5969,6 +5964,24 @@ TEST_F(ArrayFunctionsTest, array_repeat_map) {
             ASSERT_EQ(element_0.find(2)->second.get_int32(),
                       dest_column->get(1).get_array()[0].get<DatumMap>().find(2)->second.get_int32());
         }
+    }
+}
+
+TEST_F(ArrayFunctionsTest, array_flatten_int) {
+    // array_flatten(NULL): NULL
+    // array_flatten([[1, 2], [1, 4]]): [1,2,1,4]
+    // array_flatten([[1, 2], [3]]): [1,2,3]
+    {
+        auto array = ColumnHelper::create_column(TYPE_ARRAY_ARRAY_INT, true);
+        array->append_nulls(1);
+        array->append_datum(DatumArray{DatumArray{1, 2}, DatumArray{1, 4}});
+        array->append_datum(DatumArray{DatumArray{1, 2}, DatumArray{3}});
+
+        auto result = ArrayFunctions::array_flatten(nullptr, {array}).value();
+        EXPECT_EQ(3, result->size());
+        EXPECT_TRUE(result->get(0).is_null());
+        EXPECT_EQ("[1,2,1,4]", result->debug_item(1));
+        EXPECT_EQ("[1,2,3]", result->debug_item(2));
     }
 }
 } // namespace starrocks

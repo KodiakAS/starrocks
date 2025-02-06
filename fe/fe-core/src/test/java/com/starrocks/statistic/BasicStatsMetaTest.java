@@ -83,7 +83,9 @@ public class BasicStatsMetaTest extends PlanTestBase {
                     LocalDateTime.of(2024, 07, 22, 12, 20), Map.of(), 10000);
             basicStatsMeta.increaseDeltaRows(5000L);
             basicStatsMeta.setUpdateRows(10000L);
-            Assert.assertEquals(0.5, basicStatsMeta.getHealthy(), 0.01);
+            Assert.assertEquals(1.0, basicStatsMeta.getHealthy(), 0.01);
+            basicStatsMeta.resetDeltaRows();
+            Assert.assertEquals(1.0, basicStatsMeta.getHealthy(), 0.01);
         }
     }
 
@@ -94,7 +96,8 @@ public class BasicStatsMetaTest extends PlanTestBase {
         {
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
             DataOutputStream dataOutputStream = new DataOutputStream(byteArrayOutputStream);
-            String s = "{\"dbId\":10001,\"tableId\":10177,\"columns\":[],\"type\":\"FULL\",\"updateTime\":1721650800," +
+            String s = "{\"dbId\":" + db.getId() +
+                    ",\"tableId\":" + tbl.getId() + ",\"columns\":[],\"type\":\"FULL\",\"updateTime\":1721650800," +
                     "\"properties\":{},\"updateRows\":10000}";
             Text.writeString(dataOutputStream, s);
 

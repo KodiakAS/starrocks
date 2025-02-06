@@ -14,6 +14,7 @@
 
 package com.starrocks.scheduler.mv;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.Sets;
 import com.starrocks.analysis.Expr;
 import com.starrocks.catalog.Column;
@@ -36,6 +37,8 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.analyzer.AlterTableClauseAnalyzer;
 import com.starrocks.sql.ast.DropPartitionClause;
 import com.starrocks.sql.common.DmlException;
+import com.starrocks.sql.common.PCell;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -46,6 +49,7 @@ import java.util.Set;
 
 import static com.starrocks.catalog.MvRefreshArbiter.getMvBaseTableUpdateInfo;
 import static com.starrocks.catalog.MvRefreshArbiter.needsToRefreshTable;
+import static com.starrocks.sql.optimizer.rule.transformation.partition.PartitionSelector.getExpiredPartitionsByRetentionCondition;
 
 /**
  * MV PCT Refresh Partitioner for Partitioned Materialized View which provide utility methods associated partitions during mv
@@ -77,11 +81,12 @@ public abstract class MVPCTRefreshPartitioner {
 
     /**
      * Generate partition predicate for mv refresh according ref base table changed partitions.
-     * @param refBaseTable: ref base table to check.
+     *
+     * @param refBaseTable:               ref base table to check.
      * @param refBaseTablePartitionNames: ref base table partition names to check.
-     * @param mvPartitionSlotRefs: mv partition slot ref to generate partition predicate.
-     * @return: Return partition predicate for mv refresh.
+     * @param mvPartitionSlotRefs:        mv partition slot ref to generate partition predicate.
      * @throws AnalysisException
+     * @return: Return partition predicate for mv refresh.
      */
     public abstract Expr generatePartitionPredicate(Table refBaseTable,
                                                     Set<String> refBaseTablePartitionNames,
@@ -89,29 +94,30 @@ public abstract class MVPCTRefreshPartitioner {
 
     /**
      * Get mv partitions to refresh based on the ref base table partitions.
-     * @param mvPartitionInfo: mv partition info to check.
-     * @param snapshotBaseTables: snapshot base tables to check.
+     *
+     * @param mvPartitionInfo:           mv partition info to check.
+     * @param snapshotBaseTables:        snapshot base tables to check.
      * @param mvPotentialPartitionNames: mv potential partition names to check.
-     * @return: Return mv partitions to refresh based on the ref base table partitions.
      * @throws AnalysisException
+     * @return: Return mv partitions to refresh based on the ref base table partitions.
      */
     public abstract Set<String> getMVPartitionsToRefresh(PartitionInfo mvPartitionInfo,
                                                          Map<Long, TableSnapshotInfo> snapshotBaseTables,
                                                          MVRefreshParams mvRefreshParams,
                                                          Set<String> mvPotentialPartitionNames) throws AnalysisException;
-    public abstract Set<String> getMVPartitionsToRefreshWithForce(int partitionTTLNumber) throws AnalysisException;
+
+    public abstract Set<String> getMVPartitionsToRefreshWithForce() throws AnalysisException;
 
     /**
      * Get mv partition names with TTL based on the ref base table partitions.
+     *
      * @param materializedView: materialized view to check.
-     * @param partitionTTLNumber: mv partition TTL number.
-     * @param isAutoRefresh: is auto refresh or not.
-     * @return: mv to refresh partition names with TTL based on the ref base table partitions.
+     * @param isAutoRefresh:    is auto refresh or not.
      * @throws AnalysisException
+     * @return: mv to refresh partition names with TTL based on the ref base table partitions.
      */
     public abstract Set<String> getMVPartitionNamesWithTTL(MaterializedView materializedView,
                                                            MVRefreshParams mvRefreshParams,
-                                                           int partitionTTLNumber,
                                                            boolean isAutoRefresh) throws AnalysisException;
 
     /**
@@ -119,7 +125,7 @@ public abstract class MVPCTRefreshPartitioner {
      *
      * @param mvPartitionsToRefresh     : mv partitions to refresh.
      * @param mvPotentialPartitionNames : mv potential partition names to check.
-     * @param tentative see {@link com.starrocks.scheduler.PartitionBasedMvRefreshProcessor}
+     * @param tentative                 see {@link com.starrocks.scheduler.PartitionBasedMvRefreshProcessor}
      */
     public abstract void filterPartitionByRefreshNumber(Set<String> mvPartitionsToRefresh,
                                                         Set<String> mvPotentialPartitionNames,
@@ -134,7 +140,7 @@ public abstract class MVPCTRefreshPartitioner {
 
     /**
      * Get mv partitions to refresh based on the ref base table partitions and its updated partitions.
-     * @param refBaseTable : ref base table to check.
+     * @param refBaseTable            : ref base table to check.
      * @param baseTablePartitionNames : ref base table partition names to check.
      * @return : Return mv corresponding partition names to the ref base table partition names, null if sync info don't contain.
      */
@@ -144,15 +150,16 @@ public abstract class MVPCTRefreshPartitioner {
         Map<Table, Map<String, Set<String>>> refBaseTableMVPartitionMaps = mvContext.getRefBaseTableMVIntersectedPartitions();
         if (refBaseTableMVPartitionMaps == null || !refBaseTableMVPartitionMaps.containsKey(refBaseTable)) {
             LOG.warn("Cannot find need refreshed ref base table partition from synced partition info: {}, " +
-                            "refBaseTableMVPartitionMaps: {}", refBaseTable, refBaseTableMVPartitionMaps);
+                    "refBaseTableMVPartitionMaps: {}", refBaseTable, refBaseTableMVPartitionMaps);
             return null;
         }
         Map<String, Set<String>> refBaseTableMVPartitionMap = refBaseTableMVPartitionMaps.get(refBaseTable);
         for (String basePartitionName : baseTablePartitionNames) {
             if (!refBaseTableMVPartitionMap.containsKey(basePartitionName)) {
                 LOG.warn("Cannot find need refreshed ref base table partition from synced partition info: {}, " +
-                                "refBaseTableMVPartitionMaps: {}", basePartitionName, refBaseTableMVPartitionMaps);
-                return null;
+                        "refBaseTableMVPartitionMaps: {}", basePartitionName, refBaseTableMVPartitionMaps);
+                // refBaseTableMVPartitionMap may not contain basePartitionName if it's filtered by ttl.
+                continue;
             }
             result.addAll(refBaseTableMVPartitionMap.get(basePartitionName));
         }
@@ -197,7 +204,7 @@ public abstract class MVPCTRefreshPartitioner {
             }
             ans.retainAll(mvPartitionNames);
             LOG.info("The ref base table {} has updated partitions: {}, the corresponding " +
-                    "mv partitions to refresh: {}, " + "mvRangePartitionNames: {}", baseTable.getName(),
+                            "mv partitions to refresh: {}, " + "mvRangePartitionNames: {}", baseTable.getName(),
                     refBaseTablePartitionNames, ans, mvPartitionNames);
             result.addAll(ans);
         }
@@ -300,5 +307,29 @@ public abstract class MVPCTRefreshPartitioner {
             }
         }
         return result;
+    }
+
+    /**
+     * Filter partitions by ttl, save the kept partitions and return the next task run partition values.
+     * @param toRefreshPartitions the partitions to refresh/add
+     * @return the next task run partition list cells after the reserved partition_ttl_number
+     */
+    protected void filterPartitionsByTTL(Map<String, PCell> toRefreshPartitions,
+                                         boolean isMockPartitionIds) {
+        if (!CollectionUtils.sizeIsEmpty(toRefreshPartitions)) {
+            // filter partitions by partition_retention_condition
+            String ttlCondition = mv.getTableProperty().getPartitionRetentionCondition();
+            if (!Strings.isNullOrEmpty(ttlCondition)) {
+                List<String> expiredPartitionNames = getExpiredPartitionsByRetentionCondition(db, mv, ttlCondition,
+                        toRefreshPartitions, isMockPartitionIds);
+                // remove the expired partitions
+                if (CollectionUtils.isNotEmpty(expiredPartitionNames)) {
+                    LOG.info("Filter partitions by partition_retention_condition, ttl_condition:{}, expired:{}",
+                            ttlCondition, expiredPartitionNames);
+                    expiredPartitionNames.stream()
+                            .forEach(toRefreshPartitions::remove);
+                }
+            }
+        }
     }
 }

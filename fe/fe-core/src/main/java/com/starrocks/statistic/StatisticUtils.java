@@ -22,12 +22,13 @@ import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.SlotRef;
+import com.starrocks.analysis.StringLiteral;
 import com.starrocks.analysis.SubfieldExpr;
 import com.starrocks.analysis.TypeDef;
+import com.starrocks.authorization.PrivilegeBuiltinConstants;
 import com.starrocks.catalog.AggregateType;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.HiveMetaStoreTable;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.LocalTablet;
@@ -46,11 +47,7 @@ import com.starrocks.common.FeConstants;
 import com.starrocks.common.util.DateUtils;
 import com.starrocks.common.util.UUIDUtil;
 import com.starrocks.connector.ConnectorPartitionTraits;
-import com.starrocks.load.EtlStatus;
-import com.starrocks.load.loadv2.LoadJobFinalOperation;
 import com.starrocks.load.pipe.filelist.RepoExecutor;
-import com.starrocks.load.streamload.StreamLoadTxnCommitAttachment;
-import com.starrocks.privilege.PrivilegeBuiltinConstants;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.WarehouseManager;
@@ -60,9 +57,7 @@ import com.starrocks.sql.common.ErrorType;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.sql.optimizer.statistics.StatisticsEstimateCoefficient;
 import com.starrocks.transaction.InsertOverwriteJobStats;
-import com.starrocks.transaction.InsertTxnCommitAttachment;
 import com.starrocks.transaction.TransactionState;
-import com.starrocks.transaction.TxnCommitAttachment;
 import com.starrocks.warehouse.Warehouse;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -84,7 +79,6 @@ import java.util.stream.Collectors;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Maps.immutableEntry;
 import static com.starrocks.sql.optimizer.Utils.getLongFromDateTime;
-import static com.starrocks.statistic.StatsConstants.AnalyzeType.SAMPLE;
 
 public class StatisticUtils {
     private static final Logger LOG = LogManager.getLogger(StatisticUtils.class);
@@ -95,7 +89,7 @@ public class StatisticUtils {
             .add("information_schema").build();
 
     public static ConnectContext buildConnectContext() {
-        ConnectContext context = new ConnectContext();
+        ConnectContext context = ConnectContext.buildInner();
         // Note: statistics query does not register query id to QeProcessorImpl::coordinatorMap,
         // but QeProcessorImpl::reportExecStatus will check query id,
         // So we must disable report query status from BE to FE
@@ -123,23 +117,6 @@ public class StatisticUtils {
         context.setStartTime();
 
         return context;
-    }
-
-    private static StatsConstants.AnalyzeType parseAnalyzeType(TransactionState txnState, Table table) {
-        Long loadRows = null;
-        TxnCommitAttachment attachment = txnState.getTxnCommitAttachment();
-        if (attachment instanceof LoadJobFinalOperation) {
-            EtlStatus loadingStatus = ((LoadJobFinalOperation) attachment).getLoadingStatus();
-            loadRows = loadingStatus.getLoadedRows(table.getId());
-        } else if (attachment instanceof InsertTxnCommitAttachment) {
-            loadRows = ((InsertTxnCommitAttachment) attachment).getLoadedRows();
-        } else if (attachment instanceof StreamLoadTxnCommitAttachment) {
-            loadRows = ((StreamLoadTxnCommitAttachment) attachment).getNumRowsNormal();
-        }
-        if (loadRows != null && loadRows > Config.statistic_sample_collect_rows) {
-            return SAMPLE;
-        }
-        return StatsConstants.AnalyzeType.FULL;
     }
 
     public static void triggerCollectionOnInsertOverwrite(InsertOverwriteJobStats stats,
@@ -245,9 +222,44 @@ public class StatisticUtils {
         return updatedPartitions;
     }
 
+    // Don't use PartitionVisibleTime for data update checks as it's ineffective for ShareData architecture
+    @Deprecated
     public static LocalDateTime getPartitionLastUpdateTime(Partition partition) {
         long time = partition.getDefaultPhysicalPartition().getVisibleVersionTime();
         return LocalDateTime.ofInstant(Instant.ofEpochMilli(time), Clock.systemDefaultZone().getZone());
+    }
+
+    /**
+     * In V2: use relative changed row count to decide if a partition is healthy
+     * In V1: use VISIBLE_VERSION, which doesn't work for shared-data
+     */
+    public static boolean isPartitionStatsHealthy(Table table, Partition partition, BasicStatsMeta stats) {
+        long statsRowCount = 0;
+        if (Config.statistic_partition_healthy_v2) {
+            Map<Long, Optional<Long>> tableStatistics = GlobalStateMgr.getCurrentState().getStatisticStorage()
+                    .getTableStatistics(table.getId(), Lists.newArrayList(partition));
+            statsRowCount = tableStatistics.getOrDefault(partition.getId(), Optional.empty()).orElse(0L);
+        }
+
+        return isPartitionStatsHealthy(table, partition, stats, statsRowCount);
+    }
+
+    public static boolean isPartitionStatsHealthy(Table table, Partition partition, BasicStatsMeta stats,
+                                                  long statsRowCount) {
+        if (stats == null || stats.isInitJobMeta()) {
+            return false;
+        }
+        if (!partition.hasData()) {
+            return true;
+        }
+        if (Config.statistic_partition_healthy_v2) {
+            long currentRowCount = partition.getRowCount();
+            double relativeError = 1.0 * Math.abs(statsRowCount - currentRowCount) /
+                    (double) (currentRowCount > 0 ? currentRowCount : 1);
+            return relativeError <= 1 - Config.statistic_partition_health__v2_threshold;
+        } else {
+            return stats.isUpdatedAfterLoad(getPartitionLastUpdateTime(partition));
+        }
     }
 
     public static boolean isEmptyTable(Table table) {
@@ -299,7 +311,9 @@ public class StatisticUtils {
                     new ColumnDef("null_count", new TypeDef(ScalarType.createType(PrimitiveType.BIGINT))),
                     new ColumnDef("max", new TypeDef(maxType)),
                     new ColumnDef("min", new TypeDef(minType)),
-                    new ColumnDef("update_time", new TypeDef(ScalarType.createType(PrimitiveType.DATETIME)))
+                    new ColumnDef("update_time", new TypeDef(ScalarType.createType(PrimitiveType.DATETIME))),
+                    new ColumnDef("collection_size", new TypeDef(ScalarType.createType(PrimitiveType.BIGINT)), false, null,
+                            null, true, new ColumnDef.DefaultValueDef(true, new StringLiteral("-1")), "")
             );
         } else if (tableName.equals(StatsConstants.EXTERNAL_FULL_STATISTICS_TABLE_NAME)) {
             return ImmutableList.of(
@@ -331,7 +345,7 @@ public class StatisticUtils {
             );
         } else if (tableName.equals(StatsConstants.EXTERNAL_HISTOGRAM_STATISTICS_TABLE_NAME)) {
             return ImmutableList.of(
-                    new ColumnDef("table_uuid",  new TypeDef(tableUUIDType)),
+                    new ColumnDef("table_uuid", new TypeDef(tableUUIDType)),
                     new ColumnDef("column_name", new TypeDef(columnNameType)),
                     new ColumnDef("catalog_name", new TypeDef(catalogNameType)),
                     new ColumnDef("db_name", new TypeDef(dbNameType)),
@@ -390,6 +404,10 @@ public class StatisticUtils {
         }
         List<String> columns = new ArrayList<>();
         for (Column column : table.getBaseSchema()) {
+            // disable stats collection for auto generated columns, see SelectAnalyzer#analyzeSelect
+            if (column.isGeneratedColumn() && column.getName().startsWith(FeConstants.GENERATED_PARTITION_COLUMN_PREFIX)) {
+                continue;
+            }
             if (!column.isAggregated()) {
                 columns.add(column.getName());
             } else if (isPrimaryEngine && column.getAggregationType().equals(AggregateType.REPLACE)) {
@@ -477,17 +495,16 @@ public class StatisticUtils {
         GlobalStateMgr.getCurrentState().getAnalyzeMgr().dropExternalBasicStatsData(table.getUUID());
 
         if (table.isHiveTable() || table.isHudiTable()) {
-            HiveMetaStoreTable hiveMetaStoreTable = (HiveMetaStoreTable) table;
-            GlobalStateMgr.getCurrentState().getAnalyzeMgr().removeExternalBasicStatsMeta(hiveMetaStoreTable.getCatalogName(),
-                    hiveMetaStoreTable.getDbName(), hiveMetaStoreTable.getTableName());
-            GlobalStateMgr.getCurrentState().getAnalyzeMgr().dropAnalyzeJob(hiveMetaStoreTable.getCatalogName(),
-                    hiveMetaStoreTable.getDbName(), hiveMetaStoreTable.getTableName());
+            GlobalStateMgr.getCurrentState().getAnalyzeMgr().removeExternalBasicStatsMeta(table.getCatalogName(),
+                    table.getCatalogDBName(), table.getCatalogTableName());
+            GlobalStateMgr.getCurrentState().getAnalyzeMgr().dropAnalyzeJob(table.getCatalogName(),
+                    table.getCatalogDBName(), table.getCatalogTableName());
         } else if (table.isIcebergTable()) {
             IcebergTable icebergTable = (IcebergTable) table;
             GlobalStateMgr.getCurrentState().getAnalyzeMgr().removeExternalBasicStatsMeta(icebergTable.getCatalogName(),
-                    icebergTable.getRemoteDbName(), icebergTable.getRemoteTableName());
+                    icebergTable.getCatalogDBName(), icebergTable.getCatalogTableName());
             GlobalStateMgr.getCurrentState().getAnalyzeMgr().dropAnalyzeJob(icebergTable.getCatalogName(),
-                    icebergTable.getRemoteDbName(), icebergTable.getRemoteTableName());
+                    icebergTable.getCatalogDBName(), icebergTable.getCatalogTableName());
         } else {
             LOG.warn("drop statistics after drop table, table type is not supported, table type: {}",
                     table.getType().name());

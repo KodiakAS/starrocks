@@ -16,6 +16,7 @@
 package com.starrocks.sql.ast;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.TableName;
 import com.starrocks.catalog.BaseTableInfo;
@@ -52,7 +53,7 @@ public class CreateMaterializedViewStatement extends DdlStmt {
     private RefreshSchemeClause refreshSchemeDesc;
 
     // partition by clause which may be list or range partition expr.
-    private final List<Expr> partitionByExprs;
+    private List<Expr> partitionByExprs;
     // partition type of the mv which is deduced by its referred base table.
     private PartitionType partitionType;
 
@@ -89,6 +90,9 @@ public class CreateMaterializedViewStatement extends DdlStmt {
     //  queryOutputIndexes  :  1, 0, 2
     // which means 0th of query output column is in 1th mv's output columns, and 1th -> 0th, 2th -> 2th.
     private List<Integer> queryOutputIndices = Lists.newArrayList();
+    // Generated partition columns for mv's partition by expressions, partition expression index to generated column.
+    private Map<Integer, Column> generatedPartitionCols = Maps.newHashMap();
+    private Map<Expr, Expr> partitionByExprToAdjustExprMap = Maps.newHashMap();
 
     public CreateMaterializedViewStatement(TableName tableName, boolean ifNotExists,
                                            List<ColWithComment> colWithComments,
@@ -161,6 +165,10 @@ public class CreateMaterializedViewStatement extends DdlStmt {
      */
     public List<Expr> getPartitionByExprs() {
         return partitionByExprs;
+    }
+
+    public void setPartitionByExprs(List<Expr> partitionByExprs) {
+        this.partitionByExprs = partitionByExprs;
     }
 
     /**
@@ -298,6 +306,14 @@ public class CreateMaterializedViewStatement extends DdlStmt {
     public void setMaintenancePlan(ExecPlan maintenancePlan, ColumnRefFactory columnRefFactory) {
         this.maintenancePlan = maintenancePlan;
         this.columnRefFactory = columnRefFactory;
+    }
+
+    public Map<Integer, Column> getGeneratedPartitionCols() {
+        return generatedPartitionCols;
+    }
+
+    public Map<Expr, Expr> getPartitionByExprToAdjustExprMap() {
+        return partitionByExprToAdjustExprMap;
     }
 
     @Override

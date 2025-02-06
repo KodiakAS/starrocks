@@ -80,7 +80,7 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
                 input_null_map =
                         FunctionHelper::union_null_column(nullable->null_column(), input_null_map); // merge null
             } else {
-                input_null_map = nullable->null_column();
+                input_null_map = ColumnHelper::as_column<NullColumn>(nullable->null_column()->clone_shared());
             }
         }
         DCHECK(data_column->is_map());
@@ -121,7 +121,9 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
                 return Status::InternalError(fmt::format("The size of the captured column {} is less than map's size.",
                                                          captured->get_name()));
             }
-            cur_chunk->append_column(captured->replicate(input_map->offsets_column()->get_data()), id);
+
+            ASSIGN_OR_RETURN(auto replicated_col, captured->replicate(input_map->offsets_column()->get_data()));
+            cur_chunk->append_column(replicated_col, id);
         }
         // evaluate the lambda expression
         if (cur_chunk->num_rows() <= chunk->num_rows() * 8) {
@@ -150,8 +152,9 @@ StatusOr<ColumnPtr> MapApplyExpr::evaluate_checked(ExprContext* context, Chunk* 
                                                  map_col->keys_column()->size()));
     }
 
-    auto res_map =
-            std::make_shared<MapColumn>(map_col->keys_column(), map_col->values_column(), input_map->offsets_column());
+    auto res_map = std::make_shared<MapColumn>(
+            map_col->keys_column(), map_col->values_column(),
+            ColumnHelper::as_column<UInt32Column>(input_map->offsets_column()->clone_shared()));
 
     if (_maybe_duplicated_keys && res_map->size() > 0) {
         res_map->remove_duplicated_keys();

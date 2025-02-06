@@ -40,22 +40,23 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.starrocks.analysis.DescriptorTable;
 import com.starrocks.authentication.AuthenticationMgr;
+import com.starrocks.authorization.PrivilegeBuiltinConstants;
 import com.starrocks.catalog.FsBroker;
 import com.starrocks.catalog.ResourceGroup;
-import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.InternalErrorCode;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.Status;
 import com.starrocks.common.ThriftServer;
-import com.starrocks.common.UserException;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.common.util.AuditStatisticsUtil;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.RuntimeProfile;
+import com.starrocks.connector.exception.GlobalDictNotMatchException;
 import com.starrocks.connector.exception.RemoteFileNotFoundException;
 import com.starrocks.datacache.DataCacheSelectMetrics;
 import com.starrocks.mysql.MysqlCommand;
@@ -65,7 +66,6 @@ import com.starrocks.planner.ResultSink;
 import com.starrocks.planner.RuntimeFilterDescription;
 import com.starrocks.planner.ScanNode;
 import com.starrocks.planner.StreamLoadPlanner;
-import com.starrocks.privilege.PrivilegeBuiltinConstants;
 import com.starrocks.proto.PPlanFragmentCancelReason;
 import com.starrocks.proto.PQueryStatistics;
 import com.starrocks.qe.scheduler.Coordinator;
@@ -167,7 +167,7 @@ public class DefaultCoordinator extends Coordinator {
     private boolean isShortCircuit = false;
     private boolean isBinaryRow = false;
 
-    private ExecutionSchedule schedule;
+    private ExecutionSchedule scheduler;
 
     public static class Factory implements Coordinator.Factory {
 
@@ -310,9 +310,9 @@ public class DefaultCoordinator extends Coordinator {
             isShortCircuit = true;
         }
         if (enablePhasedScheduler) {
-            schedule = new PhasedExecutionSchedule(connectContext);
+            scheduler = new PhasedExecutionSchedule(connectContext);
         } else {
-            schedule = new AllAtOnceExecutionSchedule();
+            scheduler = new AllAtOnceExecutionSchedule();
         }
 
         this.queryProfile =
@@ -352,6 +352,11 @@ public class DefaultCoordinator extends Coordinator {
     @Override
     public void setLoadJobType(TLoadJobType type) {
         jobSpec.setLoadJobType(type);
+    }
+
+    @Override
+    public TLoadJobType getLoadJobType() {
+        return jobSpec.getLoadJobType();
     }
 
     @Override
@@ -467,7 +472,7 @@ public class DefaultCoordinator extends Coordinator {
     // 'Request' must contain at least a coordinator plan fragment (ie, can't
     // be for a query like 'SELECT 1').
     // A call to Exec() must precede all other member function calls.
-    public void prepareExec() throws Exception {
+    public void prepareExec() throws StarRocksException {
         if (LOG.isDebugEnabled()) {
             if (!jobSpec.getScanNodes().isEmpty()) {
                 LOG.debug("debug: in Coordinator::exec. query id: {}, planNode: {}",
@@ -502,9 +507,16 @@ public class DefaultCoordinator extends Coordinator {
     }
 
     @Override
+    public void onReleaseSlots() {
+        if (slot != null) {
+            jobSpec.getSlotProvider().cancelSlotRequirement(slot);
+            jobSpec.getSlotProvider().releaseSlot(slot);
+        }
+    }
+
+    @Override
     public void onFinished() {
-        jobSpec.getSlotProvider().cancelSlotRequirement(slot);
-        jobSpec.getSlotProvider().releaseSlot(slot);
+        onReleaseSlots();
         // for async profile, if Be doesn't report profile in time, we upload the most complete profile
         // into profile Manager here. IN other case, queryProfile.finishAllInstances just do nothing here
         queryProfile.finishAllInstances(Status.OK);
@@ -528,7 +540,7 @@ public class DefaultCoordinator extends Coordinator {
     }
 
     @Override
-    public void startScheduling(boolean needDeploy) throws Exception {
+    public void startScheduling(ScheduleOption option) throws StarRocksException, InterruptedException, RpcException {
         try (Timer timer = Tracers.watchScope(Tracers.Module.SCHEDULER, "Pending")) {
             QueryQueueManager.getInstance().maybeWait(connectContext, this);
         }
@@ -543,11 +555,11 @@ public class DefaultCoordinator extends Coordinator {
         }
 
         try (Timer timer = Tracers.watchScope(Tracers.Module.SCHEDULER, "Deploy")) {
-            deliverExecFragments(needDeploy);
+            deliverExecFragments(option);
         }
 
         // Prevent `explain scheduler` from waiting until the profile timeout.
-        if (!needDeploy) {
+        if (!option.doDeploy) {
             queryProfile.finishAllInstances(Status.OK);
         }
     }
@@ -555,7 +567,7 @@ public class DefaultCoordinator extends Coordinator {
     @Override
     public Status scheduleNextTurn(TUniqueId fragmentInstanceId) {
         try {
-            schedule.tryScheduleNextTurn(fragmentInstanceId);
+            scheduler.tryScheduleNextTurn(fragmentInstanceId);
         } catch (Exception e) {
             LOG.warn("schedule fragment:{} next internal error:", DebugUtil.printId(fragmentInstanceId), e);
             cancel(PPlanFragmentCancelReason.INTERNAL_ERROR, e.getMessage());
@@ -603,7 +615,7 @@ public class DefaultCoordinator extends Coordinator {
         queryProfile.attachInstances(executionDAG.getInstanceIds());
     }
 
-    private void prepareResultSink() throws AnalysisException {
+    private void prepareResultSink() {
         ExecutionFragment rootExecFragment = executionDAG.getRootFragment();
         long workerId = rootExecFragment.getInstances().get(0).getWorkerId();
         ComputeNode worker = coordinatorPreprocessor.getWorkerProvider().getWorkerById(workerId);
@@ -638,14 +650,14 @@ public class DefaultCoordinator extends Coordinator {
         }
     }
 
-    private void deliverExecFragments(boolean needDeploy) throws RpcException, UserException {
+    private void deliverExecFragments(ScheduleOption option) throws RpcException, StarRocksException {
         lock();
         try (Timer ignored = Tracers.watchScope(Tracers.Module.SCHEDULER, "DeployLockInternalTime")) {
             Deployer deployer =
                     new Deployer(connectContext, jobSpec, executionDAG, coordinatorPreprocessor.getCoordAddress(),
-                            this::handleErrorExecution, needDeploy);
-            schedule.prepareSchedule(this, deployer, executionDAG);
-            this.schedule.schedule();
+                            this::handleErrorExecution, option.doDeploy);
+            scheduler.prepareSchedule(this, deployer, executionDAG);
+            this.scheduler.schedule(option);
             queryProfile.attachExecutionProfiles(executionDAG.getExecutions());
         } finally {
             unlock();
@@ -654,7 +666,7 @@ public class DefaultCoordinator extends Coordinator {
 
     @Override
     public List<DeployState> assignIncrementalScanRangesToDeployStates(Deployer deployer, List<DeployState> deployStates)
-            throws UserException {
+            throws StarRocksException {
         List<DeployState> updatedStates = new ArrayList<>();
         if (!jobSpec.isIncrementalScanRanges()) {
             return updatedStates;
@@ -708,18 +720,18 @@ public class DefaultCoordinator extends Coordinator {
     }
 
     private void handleErrorExecution(Status status, FragmentInstanceExecState execution, Throwable failure)
-            throws UserException, RpcException {
+            throws StarRocksException, RpcException {
         cancelInternal(PPlanFragmentCancelReason.INTERNAL_ERROR);
         switch (Objects.requireNonNull(status.getErrorCode())) {
             case TIMEOUT:
-                throw new UserException("query timeout. backend id: " + execution.getWorker().getId());
+                throw new StarRocksException("query timeout. backend id: " + execution.getWorker().getId());
             case THRIFT_RPC_ERROR:
                 SimpleScheduler.addToBlocklist(execution.getWorker().getId());
                 throw new RpcException(
                         String.format("rpc failed with %s: %s", execution.getWorker().getHost(), status.getErrorMsg()),
                         failure);
             default:
-                throw new UserException(status.getErrorMsg(), failure);
+                throw new StarRocksException(status.getErrorMsg(), failure);
         }
     }
 
@@ -864,7 +876,7 @@ public class DefaultCoordinator extends Coordinator {
             return shortCircuitExecutor.getNext();
         }
         if (receiver == null) {
-            throw new UserException("There is no receiver.");
+            throw new StarRocksException("There is no receiver.");
         }
 
         RowBatch resultBatch;
@@ -895,11 +907,15 @@ public class DefaultCoordinator extends Coordinator {
                 throw new RemoteFileNotFoundException(copyStatus.getErrorMsg());
             }
 
+            if (copyStatus.isGlobalDictNotMatch()) {
+                throw new GlobalDictNotMatchException(copyStatus.getErrorMsg());
+            }
+
             if (copyStatus.isRpcError()) {
                 throw new RpcException("unknown", copyStatus.getErrorMsg());
             } else {
                 String errMsg = copyStatus.getErrorMsg();
-                LOG.warn("query failed: {}", errMsg);
+                LOG.warn("query {} failed: {}", connectContext.queryId, errMsg);
 
                 // hide host info
                 int hostIndex = errMsg.indexOf("host");
@@ -912,9 +928,11 @@ public class DefaultCoordinator extends Coordinator {
                     ec = InternalErrorCode.CANCEL_NODE_NOT_ALIVE_ERR;
                 } else if (copyStatus.isTimeout()) {
                     ErrorReport.reportTimeoutException(
-                            ErrorCode.ERR_TIMEOUT, "Query", jobSpec.getQueryOptions().query_timeout, errMsg);
+                            ErrorCode.ERR_TIMEOUT, "Query", jobSpec.getQueryOptions().query_timeout,
+                            String.format("please increase the '%s' session variable and retry",
+                                    SessionVariable.QUERY_TIMEOUT));
                 }
-                throw new UserException(ec, errMsg);
+                throw new StarRocksException(ec, errMsg);
             }
         }
 
@@ -954,7 +972,7 @@ public class DefaultCoordinator extends Coordinator {
                 queryStatus.setStatus(Status.CANCELLED);
                 queryStatus.setErrorMsg(message);
             }
-            LOG.warn("cancel execState of query, this is outside invoke");
+            LOG.info("cancel query {} because {}", connectContext.queryId, message);
             cancelInternal(reason);
         } finally {
             try {
@@ -998,7 +1016,7 @@ public class DefaultCoordinator extends Coordinator {
     }
 
     private boolean isPhasedSchedule() {
-        return schedule instanceof PhasedExecutionSchedule;
+        return scheduler instanceof PhasedExecutionSchedule;
     }
 
     // For phased schedule execution, we cancel the query context. (BE will cancel the relevant fragment internally)
@@ -1007,6 +1025,7 @@ public class DefaultCoordinator extends Coordinator {
     }
 
     private void cancelRemoteFragmentsAsync(PPlanFragmentCancelReason cancelReason) {
+        scheduler.cancel();
         for (FragmentInstanceExecState execState : executionDAG.getExecutions()) {
             // If the execState fails to be cancelled, and it has been finished or not been deployed,
             // count down the profileDoneSignal of this execState immediately,
@@ -1326,7 +1345,7 @@ public class DefaultCoordinator extends Coordinator {
                 jobSpec.getResourceGroup().getName();
     }
 
-    private void execShortCircuit() throws Exception {
+    private void execShortCircuit() throws StarRocksException {
         shortCircuitExecutor.exec();
     }
 

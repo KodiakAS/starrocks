@@ -20,7 +20,7 @@ import com.google.common.collect.Lists;
 import com.starrocks.analysis.BrokerDesc;
 import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.LabelAlreadyUsedException;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.fs.HdfsUtil;
 import com.starrocks.load.pipe.filelist.FileListRepo;
@@ -62,6 +62,7 @@ import com.starrocks.thrift.TListPipesParams;
 import com.starrocks.thrift.TResultBatch;
 import com.starrocks.thrift.TUserIdentity;
 import com.starrocks.transaction.GlobalTransactionMgr;
+import com.starrocks.transaction.TransactionStateSnapshot;
 import com.starrocks.transaction.TransactionStatus;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
@@ -339,10 +340,10 @@ public class PipeManagerTest {
             private int count = 0;
 
             @Mock
-            public List<FileStatus> listFileMeta(String path, BrokerDesc brokerDesc) throws UserException {
+            public List<FileStatus> listFileMeta(String path, BrokerDesc brokerDesc) throws StarRocksException {
                 count++;
                 if (count <= errorCount) {
-                    throw new UserException("network connection error");
+                    throw new StarRocksException("network connection error");
                 } else {
                     List<FileStatus> res = new ArrayList<>();
                     res.add(new FileStatus(1024, false, 1, 1, 1, new Path("file1")));
@@ -1073,8 +1074,8 @@ public class PipeManagerTest {
                     FileListRepo.PipeFileState.LOADING, "insert-label");
             new MockUp<GlobalTransactionMgr>() {
                 @Mock
-                public TransactionStatus getLabelStatus(long dbId, String label) {
-                    return TransactionStatus.COMMITTED;
+                public TransactionStateSnapshot getLabelStatus(long dbId, String label) {
+                    return new TransactionStateSnapshot(TransactionStatus.COMMITTED, "");
                 }
             };
 

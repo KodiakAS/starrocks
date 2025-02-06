@@ -35,13 +35,16 @@ under the License.
     <packaging>jar</packaging>
 
     <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
         <starrocks.home>${basedir}/../../</starrocks.home>
         <fe_ut_parallel>${env.FE_UT_PARALLEL}</fe_ut_parallel>
-        <jacoco.version>0.8.7</jacoco.version>
-        <iceberg.version>1.6.0</iceberg.version>
-        <paimon.version>0.8.2</paimon.version>
+        <jacoco.version>0.8.8</jacoco.version>
+        <iceberg.version>1.7.1</iceberg.version>
+        <paimon.version>1.0.0</paimon.version>
         <delta-kernel.version>4.0.0rc1</delta-kernel.version>
-        <staros.version>3.4-rc1</staros.version>
+        <staros.version>3.4-rc3</staros.version>
         <python>python</python>
     </properties>
 
@@ -339,16 +342,11 @@ under the License.
             <version>${iceberg.version}</version>
         </dependency>
 
+        <!-- https://mvnrepository.com/artifact/org.apache.httpcomponents.client5/httpclient5 -->
         <dependency>
-            <groupId>de.javakaffee</groupId>
-            <artifactId>kryo-serializers</artifactId>
-            <version>0.45</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.esotericsoftware</groupId>
-                    <artifactId>kryo</artifactId>
-                </exclusion>
-            </exclusions>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <version>5.4.1</version>
         </dependency>
 
         <dependency>
@@ -1146,7 +1144,7 @@ under the License.
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.7</version>
+                <version>${jacoco.version}</version>
                 <executions>
                     <execution>
                         <id>default-prepare-agent</id>

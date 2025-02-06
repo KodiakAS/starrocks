@@ -19,10 +19,12 @@
 
 #include "common/statusor.h"
 #include "exec/pipeline/hashjoin/hash_joiner_fwd.h"
+#include "exec/pipeline/schedule/observer.h"
 #include "exprs/expr_context.h"
 #include "exprs/predicate.h"
 #include "exprs/runtime_filter_bank.h"
 #include "gen_cpp/Types_types.h"
+#include "util/defer_op.h"
 
 namespace starrocks::pipeline {
 class RuntimeFilterHolder;
@@ -32,7 +34,7 @@ using RuntimeInFilter = starrocks::ExprContext;
 using RuntimeBloomFilter = starrocks::RuntimeFilterBuildDescriptor;
 using RuntimeBloomFilterProbeDescriptor = starrocks::RuntimeFilterProbeDescriptor;
 using RuntimeBloomFilterProbeDescriptorPtr = RuntimeBloomFilterProbeDescriptor*;
-using RuntimeBloomFilterRunningContext = starrocks::JoinRuntimeFilter::RunningContext;
+using RuntimeBloomFilterRunningContext = RuntimeFilter::RunningContext;
 using RuntimeInFilterPtr = RuntimeInFilter*;
 using RuntimeBloomFilterPtr = RuntimeBloomFilter*;
 using RuntimeInFilters = std::vector<RuntimeInFilterPtr>;
@@ -48,7 +50,7 @@ using OptRuntimeBloomFilterBuildParams = std::vector<std::optional<RuntimeBloomF
 // Parameters used to build runtime bloom-filters.
 struct RuntimeBloomFilterBuildParam {
     RuntimeBloomFilterBuildParam(bool multi_partitioned, bool eq_null, bool is_empty, std::vector<ColumnPtr> columns,
-                                 MutableJoinRuntimeFilterPtr runtime_filter)
+                                 MutableRuntimeFilterPtr runtime_filter)
             : multi_partitioned(multi_partitioned),
               eq_null(eq_null),
               is_empty(is_empty),
@@ -58,7 +60,7 @@ struct RuntimeBloomFilterBuildParam {
     bool eq_null;
     bool is_empty;
     std::vector<ColumnPtr> columns;
-    MutableJoinRuntimeFilterPtr runtime_filter;
+    MutableRuntimeFilterPtr runtime_filter;
 };
 
 // RuntimeFilterCollector contains runtime in-filters and bloom-filters, it is stored in RuntimeFilerHub
@@ -122,7 +124,15 @@ public:
     RuntimeFilterCollector* get_collector() { return _collector.load(std::memory_order_acquire); }
     bool is_ready() { return get_collector() != nullptr; }
 
+    void add_observer(RuntimeState* state, PipelineObserver* observer) {
+        _local_rf_observable.add_observer(state, observer);
+    }
+
+    auto notify() { _local_rf_observable.notify_source_observers(); }
+    Observable& observer() { return _local_rf_observable; }
+
 private:
+    Observable _local_rf_observable;
     RuntimeFilterCollectorPtr _collector_ownership;
     std::atomic<RuntimeFilterCollector*> _collector;
 };
@@ -145,11 +155,15 @@ public:
     }
 
     void set_collector(TPlanNodeId id, RuntimeFilterCollectorPtr&& collector) {
-        get_holder(id, -1)->set_collector(std::move(collector));
+        auto holder = get_holder(id, -1);
+        holder->set_collector(std::move(collector));
+        holder->notify();
     }
 
     void set_collector(TPlanNodeId id, int32_t sequence_id, RuntimeFilterCollectorPtr&& collector) {
-        get_holder(id, sequence_id)->set_collector(std::move(collector));
+        auto holder = get_holder(id, sequence_id);
+        holder->set_collector(std::move(collector));
+        holder->notify();
     }
 
     void close_all_in_filters(RuntimeState* state) {
@@ -388,7 +402,7 @@ public:
             // skip if ht.size() > limit, and it's only for local.
             if (!desc->has_remote_targets() && row_count > _local_rf_limit) continue;
             LogicalType build_type = desc->build_expr_type();
-            JoinRuntimeFilter* filter = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type);
+            RuntimeFilter* filter = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type);
             if (filter == nullptr) continue;
 
             if (desc->has_remote_targets() && row_count > _global_rf_limit) {
@@ -465,7 +479,7 @@ public:
             // skip if ht.size() > limit, and it's only for local.
             if (!desc->has_remote_targets() && row_count > _local_rf_limit) continue;
             LogicalType build_type = desc->build_expr_type();
-            JoinRuntimeFilter* filter = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type);
+            RuntimeFilter* filter = RuntimeFilterHelper::create_runtime_bloom_filter(_pool, build_type);
             if (filter == nullptr) continue;
             if (desc->has_remote_targets() && row_count > _global_rf_limit) {
                 filter->clear_bf();

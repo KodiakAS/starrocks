@@ -59,7 +59,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
@@ -227,13 +227,13 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(7, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
         jobs = jobs.stream().sorted(Comparator.comparingLong(o -> o.getTable().getId())).collect(Collectors.toList());
-        FullStatisticsCollectJob fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        HyperStatisticsCollectJob fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertTrue("[v1, v2, v3, v4, v5]".contains(
                 fullStatisticsCollectJob.getColumnNames().toString()));
-        Assert.assertTrue(jobs.get(1) instanceof FullStatisticsCollectJob);
-        fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(1);
+        Assert.assertTrue(jobs.get(1) instanceof HyperStatisticsCollectJob);
+        fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(1);
         Assert.assertTrue("[v4, v5, v6]".contains(
                 fullStatisticsCollectJob.getColumnNames().toString()));
     }
@@ -248,12 +248,12 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(3, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
         jobs = jobs.stream().sorted(Comparator.comparingLong(o -> o.getTable().getId())).collect(Collectors.toList());
-        FullStatisticsCollectJob fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        HyperStatisticsCollectJob fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("[v1, v2, v3, v4, v5]", fullStatisticsCollectJob.getColumnNames().toString());
-        Assert.assertTrue(jobs.get(1) instanceof FullStatisticsCollectJob);
-        fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(1);
+        Assert.assertTrue(jobs.get(1) instanceof HyperStatisticsCollectJob);
+        fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(1);
         Assert.assertEquals("[v4, v5, v6]", fullStatisticsCollectJob.getColumnNames().toString());
     }
 
@@ -267,8 +267,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("t0_stats", fullStatisticsCollectJob.getTable().getName());
         Assert.assertEquals("[v1, v2, v3, v4, v5]", fullStatisticsCollectJob.getColumnNames().toString());
 
@@ -281,8 +281,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("tprimary_stats", fullStatisticsCollectJob.getTable().getName());
         Assert.assertEquals("[pk, v1, v2]", fullStatisticsCollectJob.getColumnNames().toString());
 
@@ -294,8 +294,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("tunique_stats", fullStatisticsCollectJob.getTable().getName());
         Assert.assertEquals("[pk]", fullStatisticsCollectJob.getColumnNames().toString());
     }
@@ -312,8 +312,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("struct_a", fullStatisticsCollectJob.getTable().getName());
         Assert.assertEquals("[b.a, b.c, d.c.a]", fullStatisticsCollectJob.getColumnNames().toString());
     }
@@ -329,8 +329,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fullStatisticsCollectJob = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fullStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("[v2]", fullStatisticsCollectJob.getColumnNames().toString());
     }
 
@@ -345,8 +345,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof SampleStatisticsCollectJob);
-        SampleStatisticsCollectJob sampleStatisticsCollectJob = (SampleStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob sampleStatisticsCollectJob = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("[v2]", sampleStatisticsCollectJob.getColumnNames().toString());
     }
 
@@ -394,6 +394,23 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                         StatsConstants.ScheduleStatus.PENDING,
                         LocalDateTime.MIN));
         Assert.assertEquals(1, jobs2.size());
+
+        BasicStatsMeta basicStatsMeta3 = new BasicStatsMeta(db.getId(), olapTable.getId(), null,
+                StatsConstants.AnalyzeType.SAMPLE,
+                LocalDateTime.of(2021, 1, 1, 1, 1, 1), Maps.newHashMap());
+        basicStatsMeta3.increaseDeltaRows(10000000L);
+        GlobalStateMgr.getCurrentState().getAnalyzeMgr().addBasicStatsMeta(basicStatsMeta3);
+
+        List<StatisticsCollectJob> job3 = StatisticsCollectJobFactory.buildStatisticsCollectJob(
+                new NativeAnalyzeJob(db.getId(), olapTable.getId(), Lists.newArrayList("v2"),
+                        Lists.newArrayList(Type.BIGINT),
+                        StatsConstants.AnalyzeType.SAMPLE, StatsConstants.ScheduleType.SCHEDULE,
+                        Maps.newHashMap(),
+                        StatsConstants.ScheduleStatus.PENDING,
+                        LocalDateTime.MIN));
+        Assert.assertEquals(1, job3.size());
+        Assert.assertTrue(job3.get(0) instanceof HyperStatisticsCollectJob);
+        Assert.assertTrue(job3.get(0).toString().contains("partitionIdList=[10010]"));
     }
 
     @Test
@@ -411,54 +428,88 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
                 db, olapTable, Lists.newArrayList("v2"), Lists.newArrayList(Type.BIGINT),
                 StatsConstants.ScheduleType.ONCE, properties);
 
+        Config.enable_use_table_sample_collect_statistics = false;
+        Function<String, String> normalize = str -> str.replaceAll(" +", " ").toLowerCase();
         String sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
                 db, olapTable, 0.1, 64L, Maps.newHashMap(), "v2", Type.BIGINT);
-        Assert.assertEquals(String.format("INSERT INTO histogram_statistics SELECT %d, 'v2', %d, 'test.t0_stats', " +
-                        "histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  NULL, NOW() FROM (" +
-                        "SELECT `v2` as column_key FROM `test`.`t0_stats` where rand() <= 0.1 and `v2` is not null  " +
-                        "ORDER BY `v2` LIMIT 10000000) t",
-                t0StatsTableId, dbid), sql);
+        Assert.assertEquals(normalize.apply(String.format("INSERT INTO histogram_statistics(" +
+                        "table_id, column_name, db_id, table_name, buckets, mcv, update_time) SELECT %s, 'v2', %d, " +
+                        "'test.t0_stats', histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  " +
+                        "NULL, NOW() FROM (   SELECT `v2` as column_key    FROM `test`.`t0_stats`     " +
+                        "WHERE  rand() <= 0.100000 and `v2` is not null    ORDER BY `v2` LIMIT 10000000) t",
+                t0StatsTableId, dbid)), normalize.apply(sql));
 
         Map<String, String> mostCommonValues = new HashMap<>();
         mostCommonValues.put("1", "10");
         mostCommonValues.put("2", "20");
         sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
                 db, olapTable, 0.1, 64L, mostCommonValues, "v2", Type.BIGINT);
-        Assert.assertEquals(String.format("INSERT INTO histogram_statistics SELECT %d, 'v2', %d, 'test.t0_stats', " +
+        Assert.assertEquals(normalize.apply(String.format("INSERT INTO histogram_statistics(" +
+                "table_id, column_name, db_id, table_name, buckets, mcv, update_time) SELECT %d, 'v2', %d, " +
+                "'test" +
+                ".t0_stats'," +
+                " " +
                 "histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  '[[\"1\",\"10\"],[\"2\",\"20\"]]', NOW() " +
-                "FROM (SELECT `v2` as column_key FROM `test`.`t0_stats` where rand() <= 0.1 and `v2` is not null  and `v2` " +
-                "not in (1,2) ORDER BY `v2` LIMIT 10000000) t", t0StatsTableId, dbid), sql);
+                "FROM (   SELECT `v2` as column_key FROM `test`.`t0_stats` where rand() <= 0.100000 and `v2` is not " +
+                "null " +
+                " and `v2` " +
+                "not in (1,2) ORDER BY `v2` LIMIT 10000000) t", t0StatsTableId, dbid)), normalize.apply(sql));
 
         mostCommonValues.clear();
         mostCommonValues.put("0000-01-01", "10");
         mostCommonValues.put("1991-01-01", "20");
         sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
                 db, olapTable, 0.1, 64L, mostCommonValues, "v4", Type.DATE);
-        Assert.assertEquals(String.format("INSERT INTO histogram_statistics SELECT %d, 'v4', %d, 'test.t0_stats', " +
+        Assert.assertEquals(normalize.apply(String.format("INSERT INTO histogram_statistics(" +
+                        "table_id, column_name, db_id, table_name, buckets, mcv, update_time) SELECT %d, 'v4', %d, " +
+                        "'test" +
+                        ".t0_stats', " +
                 "histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  " +
                 "'[[\"0000-01-01\",\"10\"],[\"1991-01-01\",\"20\"]]', NOW() FROM " +
-                "(SELECT `v4` as column_key FROM `test`.`t0_stats` where rand() <= 0.1 and `v4` is not null  and `v4` " +
-                "not in (\"0000-01-01\",\"1991-01-01\") ORDER BY `v4` LIMIT 10000000) t", t0StatsTableId, dbid), sql);
+                        "( SELECT `v4` as column_key FROM `test`.`t0_stats` where rand() <= 0.100000 and `v4` is not " +
+                        "null  " +
+                        "and `v4` " +
+                        "not in (\"0000-01-01\",\"1991-01-01\") ORDER BY `v4` LIMIT 10000000) t", t0StatsTableId,
+                        dbid)),
+                normalize.apply(sql));
 
         mostCommonValues.clear();
         mostCommonValues.put("0000-01-01 00:00:00", "10");
         mostCommonValues.put("1991-01-01 00:00:00", "20");
         sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
                 db, olapTable, 0.1, 64L, mostCommonValues, "v5", Type.DATETIME);
-        Assert.assertEquals(String.format("INSERT INTO histogram_statistics SELECT %d, 'v5', %d, 'test.t0_stats', " +
+        Assert.assertEquals(normalize.apply(String.format("INSERT INTO histogram_statistics(" +
+                        "table_id, column_name, db_id, table_name, buckets, mcv, update_time) SELECT %d, 'v5', %d, " +
+                        "'test.t0_stats', " +
                         "histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  " +
                         "'[[\"1991-01-01 00:00:00\",\"20\"],[\"0000-01-01 00:00:00\",\"10\"]]', NOW() FROM " +
-                        "(SELECT `v5` as column_key FROM `test`.`t0_stats` where rand() <= 0.1 and `v5` is not null  and " +
+                        "( SELECT `v5` as column_key FROM `test`.`t0_stats` where rand() <= 0.100000 and `v5` is not " +
+                        "null  and " +
                         "`v5` not in (\"1991-01-01 00:00:00\",\"0000-01-01 00:00:00\") ORDER BY `v5` LIMIT 10000000) t",
-                t0StatsTableId, dbid), sql);
+                t0StatsTableId, dbid)), normalize.apply(sql));
+
+        Config.enable_use_table_sample_collect_statistics = true;
+        sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectHistogram",
+                db, olapTable, 0.1, 64L, mostCommonValues, "v5", Type.DATETIME);
+        Assert.assertEquals(normalize.apply(String.format("INSERT INTO histogram_statistics(" +
+                        "table_id, column_name, db_id, table_name, buckets, mcv, update_time) SELECT %d, 'v5', %d, " +
+                        "'test.t0_stats', " +
+                        "histogram(`column_key`, cast(64 as int), cast(0.1 as double)),  " +
+                        "'[[\"1991-01-01 00:00:00\",\"20\"],[\"0000-01-01 00:00:00\",\"10\"]]', NOW() FROM " +
+                        "( SELECT `v5` as column_key FROM `test`.`t0_stats` SAMPLE('percent'='10') where true and " +
+                        "`v5` is not null  and " +
+                        "`v5` not in (\"1991-01-01 00:00:00\",\"0000-01-01 00:00:00\") ORDER BY `v5` LIMIT 10000000) t",
+                t0StatsTableId, dbid)), normalize.apply(sql));
 
         sql = Deencapsulation.invoke(histogramStatisticsCollectJob, "buildCollectMCV",
-                db, olapTable, 100L, "v2");
-        Assert.assertEquals("select cast(version as INT), cast(db_id as BIGINT), cast(table_id as BIGINT), " +
+                db, olapTable, 100L, "v2", 0.1);
+        Assert.assertEquals(normalize.apply("select cast(version as INT), cast(db_id as BIGINT), cast(table_id as " +
+                "BIGINT), " +
                 "cast(column_key as varchar), cast(column_value as varchar) from (select 2 as version, " + dbid +
                 " as db_id, " + t0StatsTableId +
-                " as table_id, `v2` as column_key, count(`v2`) as column_value from `test`.`t0_stats` " +
-                "where `v2` is not null group by `v2` order by count(`v2`) desc limit 100 ) t", sql);
+                " as table_id, `v2` as column_key, count(`v2`) as column_value from `test`.`t0_stats` sample" +
+                "('percent'='10') " +
+                "where `v2` is not null group by `v2` order by count(`v2`) desc limit 100 ) t"), normalize.apply(sql));
     }
 
     @Test
@@ -486,7 +537,7 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
         statsConnectCtx.setThreadLocalInfo();
         StatisticExecutor statisticExecutor = new StatisticExecutor();
 
-        new MockUp<FullStatisticsCollectJob>() {
+        new MockUp<HyperStatisticsCollectJob>() {
             @Mock
             public void collect(ConnectContext context, AnalyzeStatus analyzeStatus) throws Exception {
             }
@@ -495,7 +546,7 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
         nativeAnalyzeJob.run(statsConnectCtx, statisticExecutor);
         Assert.assertEquals(StatsConstants.ScheduleStatus.FINISH, nativeAnalyzeJob.getStatus());
 
-        new MockUp<FullStatisticsCollectJob>() {
+        new MockUp<HyperStatisticsCollectJob>() {
             @Mock
             public void collect(ConnectContext context, AnalyzeStatus analyzeStatus) throws Exception {
                 throw new RuntimeException("mock exception");
@@ -512,53 +563,6 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
         nativeAnalyzeJob.run(statsConnectCtx, statisticExecutor);
         Assert.assertEquals(StatsConstants.ScheduleStatus.FAILED, nativeAnalyzeJob.getStatus());
         Assert.assertEquals("mock exception", nativeAnalyzeJob.getReason());
-    }
-
-    @Test
-    public void createAnalyzeJobSimultaneously() throws Exception {
-        new MockUp<StatisticsCollectJob>() {
-            @Mock
-            public void collect(ConnectContext context, AnalyzeStatus analyzeStatus) throws Exception {
-            }
-        };
-
-        // case: sample table
-        {
-            starRocksAssert.ddl("create analyze sample table test.t0_stats");
-            StatisticAutoCollector collector = new StatisticAutoCollector();
-            List<StatisticsCollectJob> jobs = collector.runJobs();
-            Optional<StatisticsCollectJob> tableJob = jobs.stream()
-                    .filter(x -> x.getTable().getName().equalsIgnoreCase("t0_stats")).findFirst();
-            Assert.assertTrue(tableJob.isPresent());
-            Assert.assertEquals(StatsConstants.AnalyzeType.SAMPLE, tableJob.get().getType());
-            starRocksAssert.dropAnalyzeForTable("t0_stats");
-        }
-
-        // case: column
-        {
-            starRocksAssert.ddl("create analyze full table test.t0_stats(v2)");
-            StatisticAutoCollector collector = new StatisticAutoCollector();
-            List<StatisticsCollectJob> jobs = collector.runJobs();
-            long count = jobs.stream()
-                    .filter(x -> x.getTable().getName().equalsIgnoreCase("t0_stats"))
-                    .count();
-            Assert.assertEquals(2, count);
-            starRocksAssert.dropAnalyzeForTable("t0_stats");
-        }
-
-        // case: overlapped columns
-        {
-            starRocksAssert.ddl("create analyze full table test.t0_stats(v2)");
-            starRocksAssert.ddl("create analyze full table test.t0_stats(v3)");
-            starRocksAssert.ddl("create analyze full table test.t0_stats(v2, v3)");
-            StatisticAutoCollector collector = new StatisticAutoCollector();
-            List<StatisticsCollectJob> jobs = collector.runJobs();
-            long count = jobs.stream()
-                    .filter(x -> x.getTable().getName().equalsIgnoreCase("t0_stats"))
-                    .count();
-            Assert.assertEquals(4, count);
-            starRocksAssert.dropAnalyzeForTable("t0_stats");
-        }
     }
 
     @Test
@@ -1298,8 +1302,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
         List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fjb = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("t0_stats", fjb.getTable().getName());
         Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
 
@@ -1362,8 +1366,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
         List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fjb = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
 
         BasicStatsMeta execMeta2 = new BasicStatsMeta(db.getId(), t0StatsTableId, null,
@@ -1426,8 +1430,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
         List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
         Assert.assertEquals(1, jobs.size());
-        Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-        FullStatisticsCollectJob fjb = (FullStatisticsCollectJob) jobs.get(0);
+        Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+        HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
         Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
 
         Config.statistic_auto_collect_small_table_interval = 100;
@@ -1504,8 +1508,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
             List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
             Assert.assertEquals(1, jobs.size());
-            Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-            FullStatisticsCollectJob fjb = (FullStatisticsCollectJob) jobs.get(0);
+            Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+            HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
             Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
         }
 
@@ -1520,8 +1524,8 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
             List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
             Assert.assertEquals(1, jobs.size());
-            Assert.assertTrue(jobs.get(0) instanceof SampleStatisticsCollectJob);
-            SampleStatisticsCollectJob fjb = (SampleStatisticsCollectJob) jobs.get(0);
+            Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+            HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
             Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
         }
 
@@ -1542,10 +1546,67 @@ public class StatisticsCollectJobTest extends PlanTestNoneDBBase {
 
             List<StatisticsCollectJob> jobs = StatisticsCollectJobFactory.buildStatisticsCollectJob(job);
             Assert.assertEquals(1, jobs.size());
-            Assert.assertTrue(jobs.get(0) instanceof FullStatisticsCollectJob);
-            FullStatisticsCollectJob fjb = (FullStatisticsCollectJob) jobs.get(0);
+            Assert.assertTrue(jobs.get(0) instanceof HyperStatisticsCollectJob);
+            HyperStatisticsCollectJob fjb = (HyperStatisticsCollectJob) jobs.get(0);
             Assert.assertEquals("[v1, v2, v3, v4, v5]", fjb.getColumnNames().toString());
         }
     }
 
+    @Test
+    public void testGetCollectibleColumns1() throws Exception {
+        starRocksAssert.withTable("CREATE TABLE test.t_gen_col (" +
+                " c1 datetime NOT NULL," +
+                " c2 bigint," +
+                " c3 DATETIME NULL AS date_trunc('month', c1) " +
+                " ) " +
+                " DUPLICATE KEY(c1) " +
+                " PARTITION BY (c2, c3) " +
+                " PROPERTIES('replication_num'='1')");
+        Table table = starRocksAssert.getTable("test", "t_gen_col");
+        List<String> cols =  StatisticUtils.getCollectibleColumns(table);
+        Assert.assertTrue(cols.size() == 3);
+        Assert.assertTrue(cols.contains("c3"));
+        starRocksAssert.dropTable("test.t_gen_col");
+    }
+
+    @Test
+    public void testGetCollectibleColumns2() throws Exception {
+        starRocksAssert.withTable("CREATE TABLE test.t_gen_col (" +
+                " c1 datetime NOT NULL," +
+                " c2 bigint" +
+                " ) " +
+                " DUPLICATE KEY(c1) " +
+                " PARTITION BY c2, date_trunc('month', c1) " +
+                " PROPERTIES('replication_num'='1')");
+        Table table = starRocksAssert.getTable("test", "t_gen_col");
+        List<String> cols =  StatisticUtils.getCollectibleColumns(table);
+        Assert.assertTrue(cols.size() == 2);
+        starRocksAssert.dropTable("test.t_gen_col");
+    }
+
+    @Test
+    public void testPriorityComparison() {
+        // Test case with different health values
+        StatisticsCollectJob.Priority priority1 =
+                new StatisticsCollectJob.Priority(LocalDateTime.now(), LocalDateTime.now(), 0.5);
+        StatisticsCollectJob.Priority priority2 =
+                new StatisticsCollectJob.Priority(LocalDateTime.now(), LocalDateTime.now(), 0.6);
+        Assert.assertTrue(priority1.compareTo(priority2) < 0);
+
+        // Test case with different staleness values
+        LocalDateTime now = LocalDateTime.now();
+        StatisticsCollectJob.Priority priority3 = new StatisticsCollectJob.Priority(now, now.minusSeconds(100), 0.5);
+        StatisticsCollectJob.Priority priority4 = new StatisticsCollectJob.Priority(now, now.minusSeconds(50), 0.5);
+        Assert.assertTrue(priority3.compareTo(priority4) < 0);
+
+        // Test case with both different health and staleness values
+        StatisticsCollectJob.Priority priority5 = new StatisticsCollectJob.Priority(now, now.minusSeconds(100), 0.5);
+        StatisticsCollectJob.Priority priority6 = new StatisticsCollectJob.Priority(now, now.minusSeconds(50), 0.6);
+        Assert.assertTrue(priority5.compareTo(priority6) < 0);
+
+        // Test case with statsUpdateTime set to LocalDateTime.MIN
+        StatisticsCollectJob.Priority priority7 = new StatisticsCollectJob.Priority(now, LocalDateTime.MIN, 0.5);
+        StatisticsCollectJob.Priority priority8 = new StatisticsCollectJob.Priority(now, now.minusSeconds(10), 0.5);
+        Assert.assertTrue(priority7.compareTo(priority8) < 0);
+    }
 }

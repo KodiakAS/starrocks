@@ -20,18 +20,17 @@ import com.starrocks.catalog.PaimonTable;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
+import com.starrocks.connector.ConnectorMetadatRequestContext;
 import com.starrocks.connector.ConnectorProperties;
 import com.starrocks.connector.ConnectorType;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.HdfsEnvironment;
 import com.starrocks.connector.RemoteFileInfo;
-import com.starrocks.connector.TableVersionRange;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.credential.CloudType;
 import com.starrocks.server.MetadataMgr;
-import com.starrocks.sql.optimizer.Memo;
 import com.starrocks.sql.optimizer.OptExpression;
-import com.starrocks.sql.optimizer.OptimizerContext;
+import com.starrocks.sql.optimizer.OptimizerFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.operator.logical.LogicalPaimonScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
@@ -84,9 +83,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.paimon.io.DataFileMeta.DUMMY_LEVEL;
-import static org.apache.paimon.io.DataFileMeta.EMPTY_KEY_STATS;
 import static org.apache.paimon.io.DataFileMeta.EMPTY_MAX_KEY;
 import static org.apache.paimon.io.DataFileMeta.EMPTY_MIN_KEY;
+import static org.apache.paimon.stats.SimpleStats.EMPTY_STATS;
 import static org.junit.Assert.assertEquals;
 
 public class PaimonMetadataTest {
@@ -113,14 +112,14 @@ public class PaimonMetadataTest {
         writer.complete();
 
         List<DataFileMeta> meta1 = new ArrayList<>();
-        meta1.add(new DataFileMeta("file1", 100, 200, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_KEY_STATS, null,
-                1, 1, 1, DUMMY_LEVEL, 0L, null));
-        meta1.add(new DataFileMeta("file2", 100, 300, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_KEY_STATS, null,
-                1, 1, 1, DUMMY_LEVEL, 0L, null));
+        meta1.add(new DataFileMeta("file1", 100, 200, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_STATS, EMPTY_STATS,
+                1, 1, 1, DUMMY_LEVEL, 0L, null, null, null));
+        meta1.add(new DataFileMeta("file2", 100, 300, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_STATS, EMPTY_STATS,
+                1, 1, 1, DUMMY_LEVEL, 0L, null, null, null));
 
         List<DataFileMeta> meta2 = new ArrayList<>();
-        meta2.add(new DataFileMeta("file3", 100, 400, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_KEY_STATS, null,
-                1, 1, 1, DUMMY_LEVEL, 0L, null));
+        meta2.add(new DataFileMeta("file3", 100, 400, EMPTY_MIN_KEY, EMPTY_MAX_KEY, EMPTY_STATS, EMPTY_STATS,
+                1, 1, 1, DUMMY_LEVEL, 0L, null, null, null));
         this.splits.add(DataSplit.builder().withSnapshot(1L).withPartition(row1).withBucket(1)
                 .withBucketPath("not used").withDataFiles(meta1).isStreaming(false).build());
         this.splits.add(DataSplit.builder().withSnapshot(1L).withPartition(row2).withBucket(1)
@@ -158,8 +157,9 @@ public class PaimonMetadataTest {
         };
         com.starrocks.catalog.Table table = metadata.getTable("db1", "tbl1");
         PaimonTable paimonTable = (PaimonTable) table;
-        Assert.assertEquals("db1", paimonTable.getDbName());
-        Assert.assertEquals("tbl1", paimonTable.getTableName());
+        Assert.assertTrue(metadata.tableExists("db1", "tbl1"));
+        Assert.assertEquals("db1", paimonTable.getCatalogDBName());
+        Assert.assertEquals("tbl1", paimonTable.getCatalogTableName());
         Assert.assertEquals(Lists.newArrayList("col1"), paimonTable.getPartitionColumnNames());
         Assert.assertEquals("hdfs://127.0.0.1:10000/paimon", paimonTable.getTableLocation());
         Assert.assertEquals(ScalarType.INT, paimonTable.getBaseSchema().get(0).getType());
@@ -171,14 +171,28 @@ public class PaimonMetadataTest {
     }
 
     @Test
-    public void testTableExists(@Mocked FileStoreTable paimonNativeTable) {
+    public void testGetDatabaseDoesNotExist() throws Exception {
+        String dbName = "nonexistentDb";
         new Expectations() {
             {
-                paimonNativeCatalog.tableExists((Identifier) any);
-                result = true;
+                paimonNativeCatalog.getDatabase(dbName);
+                result = new Catalog.DatabaseNotExistException("Database does not exist");
             }
         };
-        Assert.assertTrue(metadata.tableExists("db1", "tbl1"));
+        Assert.assertNull(metadata.getDb("nonexistentDb"));
+    }
+
+    @Test
+    public void testGetTableDoesNotExist() throws Exception {
+        Identifier identifier = new Identifier("nonexistentDb", "nonexistentTbl");
+        new Expectations() {
+            {
+                paimonNativeCatalog.getTable(identifier);
+                result = new Catalog.TableNotExistException(identifier);
+            }
+        };
+        Assert.assertFalse(metadata.tableExists("nonexistentDb", "nonexistentTbl"));
+        Assert.assertNull(metadata.getTable("nonexistentDb", "nonexistentTbl"));
     }
 
     @Test
@@ -254,7 +268,7 @@ public class PaimonMetadataTest {
                 result = mockRecordReader;
             }
         };
-        List<String> result = metadata.listPartitionNames("db1", "tbl1", TableVersionRange.empty());
+        List<String> result = metadata.listPartitionNames("db1", "tbl1", ConnectorMetadatRequestContext.DEFAULT);
         Assert.assertEquals(2, result.size());
         List<String> expections = Lists.newArrayList("year=2020/month=1", "year=2020/month=2");
         Assertions.assertThat(result).hasSameElementsAs(expections);
@@ -427,7 +441,7 @@ public class PaimonMetadataTest {
 
         PaimonTable paimonTable = (PaimonTable) metadata.getTable("db1", "tbl1");
 
-        ExternalScanPartitionPruneRule rule0 = ExternalScanPartitionPruneRule.PAIMON_SCAN;
+        ExternalScanPartitionPruneRule rule0 = new ExternalScanPartitionPruneRule();
 
         ColumnRefOperator colRef1 = new ColumnRefOperator(1, Type.INT, "f2", true);
         Column col1 = new Column("f2", Type.INT, true);
@@ -443,7 +457,7 @@ public class PaimonMetadataTest {
         OptExpression scan =
                 new OptExpression(new LogicalPaimonScanOperator(paimonTable, colRefToColumnMetaMap, columnMetaToColRefMap,
                         -1, null));
-        rule0.transform(scan, new OptimizerContext(new Memo(), new ColumnRefFactory()));
+        rule0.transform(scan, OptimizerFactory.mockContext(new ColumnRefFactory()));
         assertEquals(1, ((LogicalPaimonScanOperator) scan.getOp()).getScanOperatorPredicates()
                 .getSelectedPartitionIds().size());
     }

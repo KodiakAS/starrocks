@@ -20,12 +20,14 @@ import com.starrocks.analysis.SlotDescriptor;
 import com.starrocks.analysis.TupleDescriptor;
 import com.starrocks.catalog.IcebergTable;
 import com.starrocks.catalog.Type;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.connector.CatalogConnector;
+import com.starrocks.connector.ConnectorMetadatRequestContext;
 import com.starrocks.connector.GetRemoteFilesParams;
 import com.starrocks.connector.RemoteFileInfo;
 import com.starrocks.connector.RemoteFileInfoDefaultSource;
 import com.starrocks.connector.RemoteFileInfoSource;
+import com.starrocks.connector.RemoteFilesSampleStrategy;
 import com.starrocks.connector.TableVersionRange;
 import com.starrocks.connector.iceberg.IcebergConnectorScanRangeSource;
 import com.starrocks.connector.iceberg.IcebergGetRemoteFilesParams;
@@ -97,10 +99,10 @@ public class IcebergScanNode extends ScanNode {
         return scanRangeSource.getOutputs((int) maxScanRangeLength);
     }
 
-    public void setupScanRangeLocations(boolean enableIncrementalScanRanges) throws UserException {
+    public void setupScanRangeLocations(boolean enableIncrementalScanRanges) throws StarRocksException {
         Preconditions.checkNotNull(snapshotId, "snapshot id is null");
         if (snapshotId.isEmpty()) {
-            LOG.warn(String.format("Table %s has no snapshot!", icebergTable.getRemoteTableName()));
+            LOG.warn(String.format("Table %s has no snapshot!", icebergTable.getCatalogTableName()));
             return;
         }
 
@@ -119,7 +121,7 @@ public class IcebergScanNode extends ScanNode {
             List<RemoteFileInfo> splits = GlobalStateMgr.getCurrentState().getMetadataMgr().getRemoteFiles(icebergTable, params);
             if (splits.isEmpty()) {
                 LOG.warn("There is no scan tasks after planFies on {}.{} and predicate: [{}]",
-                        icebergTable.getRemoteDbName(), icebergTable.getRemoteTableName(), icebergJobPlanningPredicate);
+                        icebergTable.getCatalogDBName(), icebergTable.getCatalogTableName(), icebergJobPlanningPredicate);
                 return;
             }
             remoteFileInfoSource = new RemoteFileInfoDefaultSource(splits);
@@ -143,11 +145,11 @@ public class IcebergScanNode extends ScanNode {
 
         // Hard coding here
         // Try to get tabular signed temporary credential
-        CloudConfiguration tabularTempCloudConfiguration = CloudConfigurationFactory.
-                buildCloudConfigurationForTabular(icebergTable.getNativeTable().io().properties());
-        if (tabularTempCloudConfiguration.getCloudType() != CloudType.DEFAULT) {
+        CloudConfiguration vendedCredentialsCloudConfiguration = CloudConfigurationFactory.
+                buildCloudConfigurationForVendedCredentials(icebergTable.getNativeTable().io().properties());
+        if (vendedCredentialsCloudConfiguration.getCloudType() != CloudType.DEFAULT) {
             // If we get CloudConfiguration succeed from iceberg FileIO's properties, we just using it.
-            cloudConfiguration = tabularTempCloudConfiguration;
+            cloudConfiguration = vendedCredentialsCloudConfiguration;
         } else {
             CatalogConnector connector = GlobalStateMgr.getCurrentState().getConnectorMgr().getConnector(catalogName);
             Preconditions.checkState(connector != null,
@@ -211,7 +213,7 @@ public class IcebergScanNode extends ScanNode {
         StringBuilder output = new StringBuilder();
 
         output.append(prefix).append("TABLE: ")
-                .append(icebergTable.getRemoteDbName())
+                .append(icebergTable.getCatalogDBName())
                 .append(".")
                 .append(icebergTable.getName())
                 .append("\n");
@@ -247,9 +249,11 @@ public class IcebergScanNode extends ScanNode {
         }
 
         if (detailLevel == TExplainLevel.VERBOSE && !isResourceMappingCatalog(icebergTable.getCatalogName())) {
+            ConnectorMetadatRequestContext requestContext = new ConnectorMetadatRequestContext();
+            requestContext.setTableVersionRange(TableVersionRange.withEnd(snapshotId));
             List<String> partitionNames = GlobalStateMgr.getCurrentState().getMetadataMgr().listPartitionNames(
-                    icebergTable.getCatalogName(), icebergTable.getRemoteDbName(),
-                    icebergTable.getRemoteTableName(), TableVersionRange.withEnd(snapshotId));
+                    icebergTable.getCatalogName(), icebergTable.getCatalogDBName(),
+                    icebergTable.getCatalogTableName(), requestContext);
 
             if (selectedPartitionCount == -1) {
                 if (scanRangeSource != null) {
@@ -306,6 +310,11 @@ public class IcebergScanNode extends ScanNode {
 
     @Override
     protected boolean supportTopNRuntimeFilter() {
-        return !icebergTable.isV2Format();
+        return true;
+    }
+
+    @Override
+    public void setScanSampleStrategy(RemoteFilesSampleStrategy strategy) {
+        scanRangeSource.setSampleStrategy(strategy);
     }
 }

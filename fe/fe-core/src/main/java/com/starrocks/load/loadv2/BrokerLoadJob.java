@@ -48,7 +48,7 @@ import com.starrocks.common.DuplicatedRequestException;
 import com.starrocks.common.LabelAlreadyUsedException;
 import com.starrocks.common.LoadException;
 import com.starrocks.common.MetaNotFoundException;
-import com.starrocks.common.UserException;
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.common.util.LoadPriority;
 import com.starrocks.common.util.LogBuilder;
@@ -83,6 +83,7 @@ import com.starrocks.transaction.RunningTxnExceedException;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.transaction.TransactionState.TxnCoordinator;
 import com.starrocks.transaction.TransactionState.TxnSourceType;
+import com.starrocks.warehouse.WarehouseIdleChecker;
 import org.apache.hadoop.util.ThreadUtil;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -122,6 +123,9 @@ public class BrokerLoadJob extends BulkLoadJob {
         this.brokerDesc = brokerDesc;
         this.jobType = EtlJobType.BROKER;
         this.context = context;
+        if (context != null) {
+            this.warehouseId = context.getCurrentWarehouseId();
+        }
     }
 
     @Override
@@ -237,7 +241,7 @@ public class BrokerLoadJob extends BulkLoadJob {
         }
     }
 
-    private void createLoadingTask(Database db, BrokerPendingTaskAttachment attachment) throws UserException {
+    private void createLoadingTask(Database db, BrokerPendingTaskAttachment attachment) throws StarRocksException {
         // divide job into broker loading task by table
         Locker locker = new Locker();
         locker.lockDatabase(db.getId(), LockType.READ);
@@ -322,7 +326,7 @@ public class BrokerLoadJob extends BulkLoadJob {
                 TransactionState txnState =
                         GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getTransactionState(dbId, transactionId);
                 if (txnState == null) {
-                    throw new UserException("txn does not exist: " + transactionId);
+                    throw new StarRocksException("txn does not exist: " + transactionId);
                 }
                 txnState.addTableIndexes(table);
             }
@@ -350,6 +354,7 @@ public class BrokerLoadJob extends BulkLoadJob {
                         .add("state", state)
                         .add("error_msg", "this task will be ignored when job is: " + state)
                         .build());
+                WarehouseIdleChecker.updateJobLastFinishTime(warehouseId, System.currentTimeMillis());
                 return;
             }
             boolean shouldRetry = retryTime > 0 && txnStatusChangeReason.contains("timeout")
@@ -375,6 +380,12 @@ public class BrokerLoadJob extends BulkLoadJob {
         } finally {
             writeUnlock();
         }
+    }
+
+    @Override
+    public void afterVisible(TransactionState txnState, boolean txnOperated) {
+        super.afterVisible(txnState, txnOperated);
+        WarehouseIdleChecker.updateJobLastFinishTime(warehouseId);
     }
 
     /**
@@ -487,14 +498,14 @@ public class BrokerLoadJob extends BulkLoadJob {
             } catch (CommitRateExceededException e) {
                 // Sleep and retry.
                 ThreadUtil.sleepAtLeastIgnoreInterrupts(Math.max(e.getAllowCommitTime() - System.currentTimeMillis(), 0));
-            } catch (UserException e) {
+            } catch (StarRocksException e) {
                 cancelJobWithoutCheck(new FailMsg(FailMsg.CancelType.LOAD_RUN_FAIL, e.getMessage()), true, true);
                 break;
             }
         }
     }
 
-    private void commitTransactionUnderDatabaseLock(Database db) throws UserException {
+    private void commitTransactionUnderDatabaseLock(Database db) throws StarRocksException {
         LOG.info(new LogBuilder(LogKey.LOAD_JOB, id)
                 .add("txn_id", transactionId)
                 .add("msg", "Load job try to commit txn")

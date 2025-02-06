@@ -15,10 +15,12 @@
 #pragma once
 
 #include "exec/pipeline/pipeline_fwd.h"
+#include "exec/pipeline/scan/balanced_chunk_buffer.h"
 #include "exec/pipeline/source_operator.h"
 #include "exec/query_cache/cache_operator.h"
 #include "exec/query_cache/lane_arbiter.h"
 #include "exec/workgroup/work_group_fwd.h"
+#include "util/race_detect.h"
 #include "util/spinlock.h"
 
 namespace starrocks {
@@ -97,6 +99,20 @@ public:
 
     void update_exec_stats(RuntimeState* state) override;
 
+    bool has_full_events() { return get_chunk_buffer().limiter()->has_full_events(); }
+    virtual bool need_notify_all() { return true; }
+
+    template <class NotifyAll>
+    auto defer_notify(NotifyAll notify_all) {
+        return DeferOp([this, notify_all]() {
+            if (notify_all()) {
+                _source_factory()->observes().notify_source_observers();
+            } else {
+                _observable.notify_source_observers();
+            }
+        });
+    }
+
 protected:
     static constexpr size_t kIOTaskBatchSize = 64;
 
@@ -105,15 +121,26 @@ protected:
     virtual void attach_chunk_source(int32_t source_index) = 0;
     virtual void detach_chunk_source(int32_t source_index) {}
     virtual bool has_shared_chunk_source() const = 0;
-    virtual ChunkPtr get_chunk_from_buffer() = 0;
-    virtual size_t num_buffered_chunks() const = 0;
-    virtual size_t buffer_size() const = 0;
-    virtual size_t buffer_capacity() const = 0;
-    virtual size_t buffer_memory_usage() const = 0;
-    virtual size_t default_buffer_capacity() const = 0;
-    virtual ChunkBufferTokenPtr pin_chunk(int num_chunks) = 0;
-    virtual bool is_buffer_full() const = 0;
-    virtual void set_buffer_finished() = 0;
+
+    virtual BalancedChunkBuffer& get_chunk_buffer() const = 0;
+
+    ChunkPtr get_chunk_from_buffer() {
+        auto& chunk_buffer = get_chunk_buffer();
+        ChunkPtr chunk = nullptr;
+        if (chunk_buffer.try_get(_driver_sequence, &chunk)) {
+            return chunk;
+        }
+        return nullptr;
+    }
+
+    size_t num_buffered_chunks() const { return get_chunk_buffer().size(_driver_sequence); }
+    size_t buffer_size() const { return get_chunk_buffer().size(_driver_sequence); }
+    size_t buffer_capacity() const { return get_chunk_buffer().limiter()->capacity(); }
+    size_t buffer_memory_usage() const { return get_chunk_buffer().memory_usage(); }
+    size_t default_buffer_capacity() const { return get_chunk_buffer().limiter()->default_capacity(); }
+    ChunkBufferTokenPtr pin_chunk(int num_chunks) { return get_chunk_buffer().limiter()->pin(num_chunks); }
+    bool is_buffer_full() const { return get_chunk_buffer().limiter()->is_full(); }
+    void set_buffer_finished() { get_chunk_buffer().set_finished(_driver_sequence); }
 
     // This method is only invoked when current morsel is reached eof
     // and all cached chunk of this morsel has benn read out
@@ -206,6 +233,8 @@ private:
 
     RuntimeProfile::Counter* _prepare_chunk_source_timer = nullptr;
     RuntimeProfile::Counter* _submit_io_task_timer = nullptr;
+
+    DECLARE_RACE_DETECTOR(race_pull_chunk)
 };
 
 class ScanOperatorFactory : public SourceOperatorFactory {
@@ -235,6 +264,10 @@ protected:
 
     std::shared_ptr<workgroup::ScanTaskGroup> _scan_task_group;
 };
+
+inline auto scan_defer_notify(ScanOperator* scan_op) {
+    return scan_op->defer_notify([scan_op]() -> bool { return scan_op->need_notify_all(); });
+}
 
 pipeline::OpFactories decompose_scan_node_to_pipeline(std::shared_ptr<ScanOperatorFactory> factory, ScanNode* scan_node,
                                                       pipeline::PipelineBuilderContext* context);

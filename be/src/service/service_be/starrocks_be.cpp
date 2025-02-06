@@ -27,6 +27,7 @@
 #include "common/process_exit.h"
 #include "common/status.h"
 #include "exec/pipeline/query_context.h"
+#include "fs/s3/poco_common.h"
 #include "gutil/strings/join.h"
 #include "runtime/exec_env.h"
 #include "runtime/fragment_mgr.h"
@@ -262,11 +263,9 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     auto brpc_server = std::make_unique<brpc::Server>();
 
     BackendInternalServiceImpl<PInternalService> internal_service(exec_env);
-    BackendInternalServiceImpl<doris::PBackendService> backend_service(exec_env);
     LakeServiceImpl lake_service(exec_env, exec_env->lake_tablet_manager());
 
     brpc_server->AddService(&internal_service, brpc::SERVER_DOESNT_OWN_SERVICE);
-    brpc_server->AddService(&backend_service, brpc::SERVER_DOESNT_OWN_SERVICE);
     brpc_server->AddService(&lake_service, brpc::SERVER_DOESNT_OWN_SERVICE);
 
     brpc::ServerOptions options;
@@ -308,8 +307,10 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
 
     // Start Arrow Flight SQL server
     auto arrow_flight_sql_server = std::make_unique<ArrowFlightSqlServer>();
-    if (auto status = arrow_flight_sql_server->start(config::be_arrow_port); !status.ok()) {
-        LOG(ERROR) << process_name << " arrow flight sql server did not start correctly, exiting: " << status.message();
+    if (auto status = arrow_flight_sql_server->start(config::arrow_flight_port); !status.ok()) {
+        LOG(ERROR) << process_name << " Arrow Flight Sql Server did not start correctly, exiting: " << status.message()
+                   << ". Its port might be occupied. You can modify `arrow_flight_port` in `be.conf` to an unused port "
+                      "or set it to -1 to disable it.";
         shutdown_logging();
         exit(1);
     }
@@ -349,6 +350,10 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
     heartbeat_server.reset();
     LOG(INFO) << process_name << " exit step " << exit_step++ << ": heartbeat server exit successfully";
 
+    arrow_flight_sql_server->stop();
+    arrow_flight_sql_server.reset();
+    LOG(INFO) << process_name << " exit step " << exit_step++ << ": Arrow Flight SQL server exit successfully";
+
     http_server->stop();
     brpc_server->Stop(0);
     thrift_server->stop();
@@ -377,6 +382,11 @@ void start_be(const std::vector<StorePath>& paths, bool as_cn) {
         LOG(INFO) << process_name << " exit step " << exit_step++ << ": datacache shutdown successfully";
     }
 #endif
+
+    if (config::enable_poco_client_for_aws_sdk) {
+        starrocks::poco::HTTPSessionPools::instance().shutdown();
+        LOG(INFO) << process_name << " exit step " << exit_step++ << ": poco connection pool shutdown successfully";
+    }
 
     http_server->join();
     http_server.reset();

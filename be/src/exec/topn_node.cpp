@@ -14,15 +14,14 @@
 
 #include "exec/topn_node.h"
 
-#include <any>
 #include <memory>
+#include <type_traits>
 
 #include "exec/chunks_sorter.h"
 #include "exec/chunks_sorter_full_sort.h"
 #include "exec/chunks_sorter_heap_sort.h"
 #include "exec/chunks_sorter_topn.h"
 #include "exec/pipeline/limit_operator.h"
-#include "exec/pipeline/noop_sink_operator.h"
 #include "exec/pipeline/pipeline_builder.h"
 #include "exec/pipeline/sort/local_merge_sort_source_operator.h"
 #include "exec/pipeline/sort/local_parallel_merge_sort_source_operator.h"
@@ -34,7 +33,6 @@
 #include "exec/pipeline/sort/spillable_partition_sort_sink_operator.h"
 #include "exec/pipeline/source_operator.h"
 #include "exec/pipeline/spill_process_channel.h"
-#include "exec/pipeline/spill_process_operator.h"
 #include "gutil/casts.h"
 #include "runtime/current_thread.h"
 
@@ -322,11 +320,13 @@ std::vector<std::shared_ptr<pipeline::OperatorFactory>> TopNNode::_decompose_to_
 
     OperatorFactoryPtr sink_operator;
 
-    int64_t max_buffered_rows = 1024000;
-    int64_t max_buffered_bytes = 16 * 1024 * 1024;
+    int64_t max_buffered_rows = ChunksSorterFullSort::kDefaultMaxBufferRows;
+    int64_t max_buffered_bytes = ChunksSorterFullSort::kDefaultMaxBufferBytes;
     if (_tnode.sort_node.__isset.max_buffered_bytes) {
-        max_buffered_rows = _tnode.sort_node.max_buffered_rows;
         max_buffered_bytes = _tnode.sort_node.max_buffered_bytes;
+    }
+    if (_tnode.sort_node.__isset.max_buffered_rows) {
+        max_buffered_rows = _tnode.sort_node.max_buffered_rows;
     }
 
     sink_operator = std::make_shared<SinkFactory>(
@@ -342,10 +342,14 @@ std::vector<std::shared_ptr<pipeline::OperatorFactory>> TopNNode::_decompose_to_
     SourceOperatorFactoryPtr source_operator;
 
     source_operator = std::make_shared<SourceFactory>(context->next_operator_id(), id(), context_factory);
-    if (!is_partition_topn && enable_parallel_merge) {
+    if constexpr (std::is_same_v<LocalParallelMergeSortSourceOperatorFactory, SourceFactory>) {
         down_cast<LocalParallelMergeSortSourceOperatorFactory*>(source_operator.get())
                 ->set_tuple_desc(_materialized_tuple_desc);
         down_cast<LocalParallelMergeSortSourceOperatorFactory*>(source_operator.get())->set_is_gathered(need_merge);
+        if (_tnode.sort_node.__isset.parallel_merge_late_materialize_mode) {
+            down_cast<LocalParallelMergeSortSourceOperatorFactory*>(source_operator.get())
+                    ->set_materialized_mode(_tnode.sort_node.parallel_merge_late_materialize_mode);
+        }
     }
 
     ops_sink_with_sort.emplace_back(std::move(sink_operator));

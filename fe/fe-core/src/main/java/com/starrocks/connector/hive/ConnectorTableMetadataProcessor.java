@@ -48,7 +48,8 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
 
     private final Set<BaseTableInfo> registeredTableInfos = Sets.newConcurrentHashSet();
 
-    private final Map<String, CacheUpdateProcessor> cacheUpdateProcessors = new ConcurrentHashMap<>();
+    private final Map<CatalogNameType, CacheUpdateProcessor> cacheUpdateProcessors =
+            new ConcurrentHashMap<>();
 
     private final ExecutorService refreshRemoteFileExecutor;
     private final Map<String, IcebergCatalog> cachingIcebergCatalogs = new ConcurrentHashMap<>();
@@ -57,14 +58,16 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         registeredTableInfos.add(tableInfo);
     }
 
-    public void registerCacheUpdateProcessor(String catalogName, CacheUpdateProcessor cache) {
-        LOG.info("register to update {} metadata cache in the ConnectorTableMetadataProcessor", catalogName);
-        cacheUpdateProcessors.put(catalogName, cache);
+    public void registerCacheUpdateProcessor(CatalogNameType catalogNameType, CacheUpdateProcessor cache) {
+        LOG.info("register to update {}:{} metadata cache in the ConnectorTableMetadataProcessor",
+                catalogNameType.getCatalogName(), catalogNameType.getCatalogType());
+        cacheUpdateProcessors.put(catalogNameType, cache);
     }
 
-    public void unRegisterCacheUpdateProcessor(String catalogName) {
-        LOG.info("unregister to update {} metadata cache in the ConnectorTableMetadataProcessor", catalogName);
-        cacheUpdateProcessors.remove(catalogName);
+    public void unRegisterCacheUpdateProcessor(CatalogNameType catalogNameType) {
+        LOG.info("unregister to update {}:{} metadata cache in the ConnectorTableMetadataProcessor",
+                catalogNameType.getCatalogName(), catalogNameType.getCatalogType());
+        cacheUpdateProcessors.remove(catalogNameType);
     }
 
     public void registerCachingIcebergCatalog(String catalogName, IcebergCatalog icebergCatalog) {
@@ -99,9 +102,11 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
 
     private void refreshCatalogTable() {
         MetadataMgr metadataMgr = GlobalStateMgr.getCurrentState().getMetadataMgr();
-        List<String> catalogNames = Lists.newArrayList(cacheUpdateProcessors.keySet());
-        for (String catalogName : catalogNames) {
-            CacheUpdateProcessor updateProcessor = cacheUpdateProcessors.get(catalogName);
+        List<CatalogNameType> catalogNameTypes = Lists.newArrayList(cacheUpdateProcessors.keySet());
+        for (CatalogNameType catalogNameType : catalogNameTypes) {
+            String catalogName = catalogNameType.getCatalogName();
+            LOG.info("Starting to refresh tables from {}:{} metadata cache", catalogName, catalogNameType.getCatalogType());
+            CacheUpdateProcessor updateProcessor = cacheUpdateProcessors.get(catalogNameType);
             if (updateProcessor == null) {
                 LOG.error("Failed to get cacheUpdateProcessor by catalog {}.", catalogName);
                 continue;
@@ -158,7 +163,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
             try {
                 Optional<Table> registeredTableOpt = MvUtils.getTableWithIdentifier(registeredTableInfo);
                 if (registeredTableOpt.isEmpty()) {
-                    LOG.warn("Table {}.{}.{} not exist",  registeredTableInfo.getCatalogName(),
+                    LOG.warn("Table {}.{}.{} not exist", registeredTableInfo.getCatalogName(),
                             registeredTableInfo.getDbName(), registeredTableInfo.getTableName());
                     continue;
                 }
@@ -196,7 +201,8 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
             for (HiveTable table : tables) {
                 try {
                     LOG.info("Start to refresh hive external table metadata on {}.{} of StarRocks and {}.{} of hive " +
-                            "in the background", db.getFullName(), table.getName(), table.getDbName(), table.getTableName());
+                                    "in the background", db.getFullName(), table.getName(), table.getCatalogDBName(),
+                            table.getCatalogTableName());
                     // we didn't use db locks to prevent background tasks from affecting the query.
                     // So we need to check if the table to be refreshed exists.
                     if (GlobalStateMgr.getCurrentState().getLocalMetastore().getTable(db.getId(), table.getId()) != null) {

@@ -30,11 +30,13 @@ import com.starrocks.catalog.AggregateType;
 import com.starrocks.catalog.CatalogUtils;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.DataProperty;
+import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DynamicPartitionProperty;
 import com.starrocks.catalog.ExpressionRangePartitionInfo;
 import com.starrocks.catalog.HashDistributionInfo;
 import com.starrocks.catalog.Index;
 import com.starrocks.catalog.KeysType;
+import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
@@ -103,6 +105,7 @@ import com.starrocks.sql.common.MetaUtils;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import com.starrocks.sql.optimizer.rule.transformation.partition.PartitionSelector;
 import com.starrocks.sql.optimizer.transformer.ExpressionMapping;
 import com.starrocks.sql.optimizer.transformer.SqlToScalarOperatorTranslator;
 import org.apache.commons.collections4.CollectionUtils;
@@ -212,6 +215,8 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
             PropertyAnalyzer.analyzePartitionLiveNumber(properties, false);
         } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_PARTITION_TTL)) {
             PropertyAnalyzer.analyzePartitionTTL(properties, false);
+        } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_PARTITION_RETENTION_CONDITION)) {
+            // do nothing
         } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM)) {
             PropertyAnalyzer.analyzeReplicationNum(properties, false);
         } else if (properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_COOLDOWN_TTL)) {
@@ -500,14 +505,6 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
         }
 
         if (columnDef.isGeneratedColumn()) {
-            if (!table.isOlapTable()) {
-                throw new SemanticException("Generated Column only support olap table");
-            }
-
-            if (table.isCloudNativeTable()) {
-                throw new SemanticException("Lake table does not support generated column");
-            }
-
             if (((OlapTable) table).getKeysType() == KeysType.AGG_KEYS) {
                 throw new SemanticException("Generated Column does not support AGG table");
             }
@@ -617,14 +614,6 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
 
             if (colDef.isGeneratedColumn()) {
                 hasGeneratedColumn = true;
-
-                if (!table.isOlapTable()) {
-                    throw new SemanticException("Generated Column only support olap table");
-                }
-
-                if (table.isCloudNativeTable()) {
-                    throw new SemanticException("Lake table does not support generated column");
-                }
 
                 if (((OlapTable) table).getKeysType() == KeysType.AGG_KEYS) {
                     throw new SemanticException("Generated Column does not support AGG table");
@@ -781,14 +770,6 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
         }
 
         if (columnDef.isGeneratedColumn()) {
-            if (!(table instanceof OlapTable)) {
-                throw new SemanticException("Generated Column only support olap table");
-            }
-
-            if (table.isCloudNativeTable()) {
-                throw new SemanticException("Lake table does not support generated column");
-            }
-
             if (((OlapTable) table).getKeysType() == KeysType.AGG_KEYS) {
                 throw new SemanticException("Generated Column does not support AGG table");
             }
@@ -1109,13 +1090,37 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
             try {
                 OlapTable olapTable = (OlapTable) table;
                 PartitionInfo partitionInfo = olapTable.getPartitionInfo();
+                upgradeDeprecatedSingleItemListPartitionDesc(olapTable, partitionDescList, clause, partitionInfo);
                 analyzeAddPartition(olapTable, partitionDescList, clause, partitionInfo);
             } catch (DdlException | AnalysisException | NotImplementedException e) {
-                throw new SemanticException(e.getMessage());
+                throw new SemanticException(e.getMessage(), e);
             }
         }
 
         return null;
+    }
+
+    /**
+     * {@link SingleItemListPartitionDesc}
+     */
+    private void upgradeDeprecatedSingleItemListPartitionDesc(OlapTable table,
+                                                              List<PartitionDesc> partitionDescs,
+                                                              AddPartitionClause addPartitionClause,
+                                                              PartitionInfo partitionInfo) throws AnalysisException {
+        if (!partitionInfo.isListPartition()) {
+            return;
+        }
+        ListPartitionInfo listPartitionInfo = (ListPartitionInfo) partitionInfo;
+        boolean addSingleColumnPartition = partitionDescs.get(0) instanceof SingleItemListPartitionDesc;
+        if (addSingleColumnPartition &&
+                !listPartitionInfo.isMultiColumnPartition() &&
+                listPartitionInfo.isDeFactoMultiItemPartition()) {
+            Preconditions.checkState(partitionDescs.size() == 1);
+            MultiItemListPartitionDesc newDesc =
+                    ((SingleItemListPartitionDesc) partitionDescs.get(0)).upgradeToMultiItem();
+            partitionDescs.set(0, newDesc);
+            addPartitionClause.setPartitionDesc(newDesc);
+        }
     }
 
     private void analyzeAddPartition(OlapTable olapTable, List<PartitionDesc> partitionDescs,
@@ -1204,13 +1209,12 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
     @Override
     public Void visitDropPartitionClause(DropPartitionClause clause, ConnectContext context) {
         if (clause.getMultiRangePartitionDesc() != null) {
-            MultiRangePartitionDesc multiRangePartitionDesc = clause.getMultiRangePartitionDesc();
-            PartitionDescAnalyzer.analyze(multiRangePartitionDesc);
-
             if (!(table instanceof OlapTable)) {
-                throw new SemanticException("Can't add multi-range partition to table type is not olap");
+                throw new SemanticException("Can't drop partitions with multi-range since it is not olap table");
             }
             OlapTable olapTable = (OlapTable) table;
+            MultiRangePartitionDesc multiRangePartitionDesc = clause.getMultiRangePartitionDesc();
+            PartitionDescAnalyzer.analyze(multiRangePartitionDesc);
             PartitionDescAnalyzer.analyzePartitionDescWithExistsTable(multiRangePartitionDesc, olapTable);
 
             PartitionInfo partitionInfo = olapTable.getPartitionInfo();
@@ -1229,6 +1233,28 @@ public class AlterTableClauseAnalyzer implements AstVisitor<Void, ConnectContext
             clause.setResolvedPartitionNames(Lists.newArrayList(clause.getPartitionName()));
         } else if (clause.getPartitionNames() != null) {
             clause.setResolvedPartitionNames(clause.getPartitionNames());
+        } else if (clause.getDropWhereExpr() != null) {
+            // do check drop partition expression
+            if (!(table instanceof OlapTable)) {
+                throw new SemanticException("Can't drop partitions with where expression since it is not olap table");
+            }
+            OlapTable olapTable = (OlapTable) table;
+            if (!olapTable.getPartitionInfo().isPartitioned()) {
+                throw new SemanticException("Can't drop partitions with where expression since it is not a partition table");
+            }
+            if (clause.isTempPartition()) {
+                throw new SemanticException("Can't drop temp partitions with where expression and `TEMPORARY` keyword");
+            }
+            if (clause.isSetIfExists()) {
+                throw new SemanticException("Can't drop partitions with where expression and `IF EXISTS` keyword");
+            }
+            Expr expr = clause.getDropWhereExpr();
+            Database db = context.getGlobalStateMgr().getMetadataMgr()
+                    .getDb(context.getCurrentCatalog(), context.getDatabase());
+            TableName tableName = new TableName(db.getFullName(), table.getName());
+            List<String> dropPartitionNames = PartitionSelector.getPartitionNamesByExpr(context, tableName,
+                    olapTable, expr, true);
+            clause.setResolvedPartitionNames(dropPartitionNames);
         }
 
         if (table instanceof OlapTable) {

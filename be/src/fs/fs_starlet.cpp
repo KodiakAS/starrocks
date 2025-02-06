@@ -32,12 +32,15 @@
 #include "fs/output_stream_adapter.h"
 #include "gutil/strings/util.h"
 #include "io/input_stream.h"
+#include "io/io_profiler.h"
 #include "io/output_stream.h"
 #include "io/seekable_input_stream.h"
 #include "io/throttled_output_stream.h"
 #include "io/throttled_seekable_input_stream.h"
 #include "service/staros_worker.h"
 #include "storage/olap_common.h"
+#include "util/defer_op.h"
+#include "util/stopwatch.hpp"
 #include "util/string_parser.hpp"
 
 namespace starrocks {
@@ -139,6 +142,8 @@ public:
     }
 
     StatusOr<int64_t> read(void* data, int64_t count) override {
+        MonotonicStopWatch watch;
+        watch.start();
         auto stream_st = _file_ptr->stream();
         if (!stream_st.ok()) {
             return to_status(stream_st.status());
@@ -147,6 +152,7 @@ public:
         if (res.ok()) {
             g_starlet_io_num_reads << 1;
             g_starlet_io_read << *res;
+            IOProfiler::add_read(*res, watch.elapsed_time());
             return *res;
         } else {
             return to_status(res.status());
@@ -154,6 +160,8 @@ public:
     }
 
     StatusOr<std::string> read_all() override {
+        MonotonicStopWatch watch;
+        watch.start();
         auto stream_st = _file_ptr->stream();
         if (!stream_st.ok()) {
             return to_status(stream_st.status());
@@ -162,6 +170,7 @@ public:
         if (res.ok()) {
             g_starlet_io_num_reads << 1;
             g_starlet_io_read << res.value().size();
+            IOProfiler::add_read(res.value().size(), watch.elapsed_time());
             return std::move(res).value();
         } else {
             return to_status(res.status());
@@ -217,6 +226,8 @@ public:
         if (!stream_st.ok()) {
             return to_status(stream_st.status());
         }
+        MonotonicStopWatch watch;
+        watch.start();
         auto left = size;
         while (left > 0) {
             auto* p = static_cast<const char*>(data) + size - left;
@@ -228,6 +239,7 @@ public:
         }
         g_starlet_io_num_writes << 1;
         g_starlet_io_write << size;
+        IOProfiler::add_write(size, watch.elapsed_time());
         return Status::OK();
     }
 
@@ -238,6 +250,9 @@ public:
     }
 
     Status close() override {
+        MonotonicStopWatch watch;
+        watch.start();
+        DeferOp defer([&]() { IOProfiler::add_sync(watch.elapsed_time()); });
         auto stream_st = _file_ptr->stream();
         if (!stream_st.ok()) {
             return to_status(stream_st.status());
@@ -280,6 +295,7 @@ public:
         auto opt = ReadOptions();
         opt.skip_fill_local_cache = opts.skip_fill_local_cache;
         opt.buffer_size = opts.buffer_size;
+        opt.skip_read_local_cache = opts.skip_disk_cache;
         if (info.size.has_value()) {
             opt.file_size = info.size.value();
         }

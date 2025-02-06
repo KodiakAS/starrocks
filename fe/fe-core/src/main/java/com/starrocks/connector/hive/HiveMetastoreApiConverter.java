@@ -91,6 +91,7 @@ import static com.starrocks.catalog.HiveTable.HIVE_TABLE_COLUMN_TYPES;
 import static com.starrocks.catalog.HiveTable.HIVE_TABLE_INPUT_FORMAT;
 import static com.starrocks.catalog.HiveTable.HIVE_TABLE_SERDE_LIB;
 import static com.starrocks.catalog.HudiTable.HUDI_BASE_PATH;
+import static com.starrocks.catalog.HudiTable.HUDI_HMS_TABLE_TYPE;
 import static com.starrocks.catalog.HudiTable.HUDI_TABLE_COLUMN_NAMES;
 import static com.starrocks.catalog.HudiTable.HUDI_TABLE_COLUMN_TYPES;
 import static com.starrocks.catalog.HudiTable.HUDI_TABLE_INPUT_FOAMT;
@@ -194,8 +195,8 @@ public class HiveMetastoreApiConverter {
 
     public static Table toMetastoreApiTable(HiveTable table) {
         Table apiTable = new Table();
-        apiTable.setDbName(table.getDbName());
-        apiTable.setTableName(table.getTableName());
+        apiTable.setDbName(table.getCatalogDBName());
+        apiTable.setTableName(table.getCatalogTableName());
         apiTable.setTableType(table.getHiveTableType().name());
         apiTable.setOwner(System.getenv("HADOOP_USER_NAME"));
         apiTable.setParameters(toApiTableProperties(table));
@@ -216,7 +217,7 @@ public class HiveMetastoreApiConverter {
 
     private static StorageDescriptor makeStorageDescriptorFromHiveTable(HiveTable table) {
         SerDeInfo serdeInfo = new SerDeInfo();
-        serdeInfo.setName(table.getTableName());
+        serdeInfo.setName(table.getCatalogTableName());
         HiveStorageFormat storageFormat = table.getStorageFormat();
         serdeInfo.setSerializationLib(storageFormat.getSerde());
 
@@ -538,6 +539,7 @@ public class HiveMetastoreApiConverter {
         }
 
         hudiProperties.put(HUDI_TABLE_TYPE, metaClient.getTableType().name());
+        hudiProperties.put(HUDI_HMS_TABLE_TYPE, metastoreTable.getTableType());
 
         StringBuilder columnNamesBuilder = new StringBuilder();
         StringBuilder columnTypesBuilder = new StringBuilder();

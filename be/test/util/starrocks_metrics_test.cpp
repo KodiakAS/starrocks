@@ -328,7 +328,27 @@ TEST_F(StarRocksMetricsTest, test_metrics_register) {
     assert_threadpool_metrics_register("segment_flush", instance);
     assert_threadpool_metrics_register("update_apply", instance);
     assert_threadpool_metrics_register("pk_index_compaction", instance);
+    assert_threadpool_metrics_register("drop", instance);
+    assert_threadpool_metrics_register("create_tablet", instance);
+    assert_threadpool_metrics_register("alter_tablet", instance);
+    assert_threadpool_metrics_register("clear_transaction", instance);
+    assert_threadpool_metrics_register("storage_medium_migrate", instance);
+    assert_threadpool_metrics_register("check_consistency", instance);
+    assert_threadpool_metrics_register("manual_compaction", instance);
+    assert_threadpool_metrics_register("compaction_control", instance);
+    assert_threadpool_metrics_register("update_schema", instance);
+    assert_threadpool_metrics_register("upload", instance);
+    assert_threadpool_metrics_register("download", instance);
+    assert_threadpool_metrics_register("make_snapshot", instance);
+    assert_threadpool_metrics_register("release_snapshot", instance);
+    assert_threadpool_metrics_register("move_dir", instance);
+    assert_threadpool_metrics_register("update_tablet_meta_info", instance);
+    assert_threadpool_metrics_register("drop_auto_increment_map_dir", instance);
+    assert_threadpool_metrics_register("clone", instance);
+    assert_threadpool_metrics_register("remote_snapshot", instance);
+    assert_threadpool_metrics_register("replicate_snapshot", instance);
     ASSERT_NE(nullptr, instance->get_metric("load_channel_add_chunks_total"));
+    ASSERT_NE(nullptr, instance->get_metric("load_channel_add_chunks_eos_total"));
     ASSERT_NE(nullptr, instance->get_metric("load_channel_add_chunks_duration_us"));
     ASSERT_NE(nullptr, instance->get_metric("load_channel_add_chunks_wait_memtable_duration_us"));
     ASSERT_NE(nullptr, instance->get_metric("load_channel_add_chunks_wait_writer_duration_us"));
@@ -337,8 +357,12 @@ TEST_F(StarRocksMetricsTest, test_metrics_register) {
     ASSERT_NE(nullptr, instance->get_metric("async_delta_writer_task_total"));
     ASSERT_NE(nullptr, instance->get_metric("async_delta_writer_task_execute_duration_us"));
     ASSERT_NE(nullptr, instance->get_metric("async_delta_writer_task_pending_duration_us"));
+    ASSERT_NE(nullptr, instance->get_metric("delta_writer_commit_task_total"));
+    ASSERT_NE(nullptr, instance->get_metric("delta_writer_wait_flush_task_total"));
     ASSERT_NE(nullptr, instance->get_metric("delta_writer_wait_flush_duration_us"));
+    ASSERT_NE(nullptr, instance->get_metric("delta_writer_pk_preload_duration_us"));
     ASSERT_NE(nullptr, instance->get_metric("delta_writer_wait_replica_duration_us"));
+    ASSERT_NE(nullptr, instance->get_metric("delta_writer_txn_commit_duration_us"));
     ASSERT_NE(nullptr, instance->get_metric("memtable_finalize_duration_us"));
 }
 

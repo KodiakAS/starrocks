@@ -54,6 +54,9 @@ import com.starrocks.analysis.Subquery;
 import com.starrocks.analysis.TimestampArithmeticExpr;
 import com.starrocks.analysis.UserVariableExpr;
 import com.starrocks.analysis.VariableExpr;
+import com.starrocks.authorization.ObjectType;
+import com.starrocks.authorization.PEntryObject;
+import com.starrocks.authorization.PrivilegeType;
 import com.starrocks.catalog.BrokerTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.ConnectorView;
@@ -61,7 +64,6 @@ import com.starrocks.catalog.DistributionInfo;
 import com.starrocks.catalog.EsTable;
 import com.starrocks.catalog.FileTable;
 import com.starrocks.catalog.FunctionSet;
-import com.starrocks.catalog.HiveMetaStoreTable;
 import com.starrocks.catalog.HiveTable;
 import com.starrocks.catalog.HudiTable;
 import com.starrocks.catalog.IcebergTable;
@@ -83,9 +85,6 @@ import com.starrocks.common.Pair;
 import com.starrocks.common.util.ParseUtil;
 import com.starrocks.common.util.PrintableMap;
 import com.starrocks.credential.CredentialUtil;
-import com.starrocks.privilege.ObjectType;
-import com.starrocks.privilege.PEntryObject;
-import com.starrocks.privilege.PrivilegeType;
 import com.starrocks.sql.ast.AlterStorageVolumeStmt;
 import com.starrocks.sql.ast.AlterUserStmt;
 import com.starrocks.sql.ast.ArrayExpr;
@@ -147,6 +146,7 @@ import com.starrocks.sql.ast.pipe.CreatePipeStmt;
 import com.starrocks.sql.parser.NodePosition;
 import com.starrocks.storagevolume.StorageVolume;
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang.NotImplementedException;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.ArrayList;
@@ -230,7 +230,6 @@ public class AstToStringBuilder {
 
             return sb.toString();
         }
-
 
         public StringBuilder buildAuthOptionSql(UserAuthOption authOption) {
             StringBuilder sb = new StringBuilder();
@@ -1713,8 +1712,8 @@ public class AstToStringBuilder {
             sb.append("\"port\" = \"").append(mysqlTable.getPort()).append("\",\n");
             sb.append("\"user\" = \"").append(mysqlTable.getUserName()).append("\",\n");
             sb.append("\"password\" = \"").append(hidePassword ? "" : mysqlTable.getPasswd()).append("\",\n");
-            sb.append("\"database\" = \"").append(mysqlTable.getMysqlDatabaseName()).append("\",\n");
-            sb.append("\"table\" = \"").append(mysqlTable.getMysqlTableName()).append("\"\n");
+            sb.append("\"database\" = \"").append(mysqlTable.getCatalogDBName()).append("\",\n");
+            sb.append("\"table\" = \"").append(mysqlTable.getCatalogTableName()).append("\"\n");
             sb.append(")");
         } else if (table.getType() == Table.TableType.BROKER) {
             BrokerTable brokerTable = (BrokerTable) table;
@@ -1774,8 +1773,8 @@ public class AstToStringBuilder {
 
             // properties
             sb.append("\nPROPERTIES (\n");
-            sb.append("\"database\" = \"").append(hiveTable.getDbName()).append("\",\n");
-            sb.append("\"table\" = \"").append(hiveTable.getTableName()).append("\",\n");
+            sb.append("\"database\" = \"").append(hiveTable.getCatalogDBName()).append("\",\n");
+            sb.append("\"table\" = \"").append(hiveTable.getCatalogTableName()).append("\",\n");
             sb.append("\"resource\" = \"").append(hiveTable.getResourceName()).append("\"");
             if (!hiveTable.getProperties().isEmpty()) {
                 sb.append(",\n");
@@ -1797,8 +1796,8 @@ public class AstToStringBuilder {
 
             // properties
             sb.append("\nPROPERTIES (\n");
-            sb.append("\"database\" = \"").append(hudiTable.getDbName()).append("\",\n");
-            sb.append("\"table\" = \"").append(hudiTable.getTableName()).append("\",\n");
+            sb.append("\"database\" = \"").append(hudiTable.getCatalogDBName()).append("\",\n");
+            sb.append("\"table\" = \"").append(hudiTable.getCatalogTableName()).append("\",\n");
             sb.append("\"resource\" = \"").append(hudiTable.getResourceName()).append("\"");
             sb.append("\n)");
         } else if (table.getType() == Table.TableType.ICEBERG) {
@@ -1807,8 +1806,8 @@ public class AstToStringBuilder {
 
             // properties
             sb.append("\nPROPERTIES (\n");
-            sb.append("\"database\" = \"").append(icebergTable.getRemoteDbName()).append("\",\n");
-            sb.append("\"table\" = \"").append(icebergTable.getRemoteTableName()).append("\",\n");
+            sb.append("\"database\" = \"").append(icebergTable.getCatalogDBName()).append("\",\n");
+            sb.append("\"table\" = \"").append(icebergTable.getCatalogTableName()).append("\",\n");
             sb.append("\"resource\" = \"").append(icebergTable.getResourceName()).append("\"");
             sb.append("\n)");
         } else if (table.getType() == Table.TableType.JDBC) {
@@ -1818,7 +1817,7 @@ public class AstToStringBuilder {
             // properties
             sb.append("\nPROPERTIES (\n");
             sb.append("\"resource\" = \"").append(jdbcTable.getResourceName()).append("\",\n");
-            sb.append("\"table\" = \"").append(jdbcTable.getJdbcTable()).append("\"");
+            sb.append("\"table\" = \"").append(jdbcTable.getCatalogTableName()).append("\"");
             sb.append("\n)");
         }
         sb.append(";");
@@ -1909,26 +1908,39 @@ public class AstToStringBuilder {
             createTableSql.append(String.join(", ", partitionNames)).append(")");
         }
 
-        // Location
-        String location = null;
-        if (table.isHiveTable() || table.isHudiTable()) {
-            location = ((HiveMetaStoreTable) table).getTableLocation();
-        } else if (table.isIcebergTable()) {
-            location = table.getTableLocation();
-        } else if (table.isDeltalakeTable()) {
-            location = table.getTableLocation();
-        } else if (table.isPaimonTable()) {
-            location = table.getTableLocation();
-        }
-
         // Comment
         if (!Strings.isNullOrEmpty(table.getComment())) {
             createTableSql.append("\nCOMMENT (\"").append(table.getComment()).append("\")");
         }
 
-        if (!Strings.isNullOrEmpty(location)) {
-            createTableSql.append("\nPROPERTIES (\"location\" = \"").append(location).append("\");");
+        // Properties
+        Map<String, String> properties = new HashMap<>();
+        try {
+            properties = new HashMap<>(table.getProperties());
+        } catch (NotImplementedException e) {
         }
+
+        // Location
+        String location = null;
+        try {
+            location = table.getTableLocation();
+            if (!Strings.isNullOrEmpty(location)) {
+                properties.put("location", location);
+            }
+        } catch (NotImplementedException e) {
+        }
+
+        if (!properties.isEmpty()) {
+            createTableSql.append("\nPROPERTIES (");
+            for (Map.Entry<String, String> kv : properties.entrySet()) {
+                createTableSql.append("\"" + kv.getKey() + "\" = \"").append(kv.getValue()).append("\",");
+            }
+            if (createTableSql.charAt(createTableSql.length() - 1) == ',') {
+                createTableSql.deleteCharAt(createTableSql.length() - 1);
+            }
+            createTableSql.append(")");
+        }
+        createTableSql.append(";");
 
         return createTableSql.toString();
     }

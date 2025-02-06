@@ -29,7 +29,7 @@
 namespace starrocks {
 
 template <LogicalType field_type, typename ItemSet>
-class ColumnInPredicate : public ColumnPredicate {
+class ColumnInPredicate final : public ColumnPredicate {
     using ValueType = typename CppTypeTraits<field_type>::CppType;
     static_assert(std::is_same_v<ValueType, typename ItemSet::value_type>);
 
@@ -195,7 +195,7 @@ private:
 
 // Template specialization for binary column
 template <LogicalType field_type>
-class BinaryColumnInPredicate : public ColumnPredicate {
+class BinaryColumnInPredicate final : public ColumnPredicate {
 public:
     BinaryColumnInPredicate(const TypeInfoPtr& type_info, ColumnId id, std::vector<std::string> strings)
             : ColumnPredicate(type_info, id), _zero_padded_strs(std::move(strings)) {
@@ -368,7 +368,7 @@ private:
     ItemHashSet<Slice> _slices;
 };
 
-class DictionaryCodeInPredicate : public ColumnPredicate {
+class DictionaryCodeInPredicate final : public ColumnPredicate {
 private:
     enum LogicOp { ASSIGN, AND, OR };
 
@@ -392,7 +392,7 @@ public:
 
         if (column->has_null()) {
             const NullColumn* null_column = down_cast<const NullableColumn*>(column)->null_column().get();
-            auto null_data = null_column->get_data();
+            const auto& null_data = null_column->get_data();
             for (auto i = from; i < to; i++) {
                 auto index = data[i] >= _bit_mask.size() ? 0 : data[i];
                 filter[i - from] = (!null_data[i]) & _bit_mask[index];

@@ -41,9 +41,10 @@ NLJoinProbeOperator::NLJoinProbeOperator(OperatorFactory* factory, int32_t id, i
           _cross_join_context(cross_join_context) {}
 
 Status NLJoinProbeOperator::prepare(RuntimeState* state) {
-    RETURN_IF_ERROR(Operator::prepare(state));
+    RETURN_IF_ERROR(OperatorWithDependency::prepare(state));
 
     _cross_join_context->incr_prober();
+    _cross_join_context->attach_probe_observer(state, observer());
 
     _output_accumulator.set_desired_size(state->chunk_size());
 
@@ -65,6 +66,7 @@ void NLJoinProbeOperator::close(RuntimeState* state) {
 bool NLJoinProbeOperator::is_ready() const {
     bool res = _cross_join_context->is_right_finished();
     if (res) {
+        // TODO(stdpain): process concurrency problem
         _init_build_match();
     }
     return res;
@@ -128,7 +130,6 @@ Status NLJoinProbeOperator::reset_state(starrocks::RuntimeState* state, const st
 }
 
 bool NLJoinProbeOperator::has_output() const {
-    _check_post_probe();
     return _join_stage != JoinStage::Finished;
 }
 
@@ -148,6 +149,7 @@ bool NLJoinProbeOperator::is_finished() const {
 }
 
 Status NLJoinProbeOperator::set_finishing(RuntimeState* state) {
+    auto notify = _cross_join_context->defer_notify_build();
     _check_post_probe();
     _input_finished = true;
 
@@ -600,6 +602,7 @@ Status NLJoinProbeOperator::_permute_right_join(size_t chunk_size) {
 // 2. Apply the conjuncts, and append it to output buffer
 // 3. Maintain match index and implement left join and right join
 StatusOr<ChunkPtr> NLJoinProbeOperator::pull_chunk(RuntimeState* state) {
+    _check_post_probe();
     size_t chunk_size = state->chunk_size();
 
     if (_join_op == TJoinOp::INNER_JOIN) {
